@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text Embedding Demo - ONNX Zig</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1, h2, h3 { color: #00d4ff; }
+        .card {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #0f3460;
+        }
+        .status {
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .status.success { background: #0f5132; border: 1px solid #198754; }
+        .status.error { background: #842029; border: 1px solid #dc3545; }
+        .status.info { background: #055160; border: 1px solid #0dcaf0; }
+        .status.loading { background: #664d03; border: 1px solid #ffc107; }
+        button {
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            margin: 5px;
+            transition: background 0.2s;
+        }
+        button:hover { background: #00b4d8; }
+        button:disabled { background: #555; cursor: not-allowed; color: #888; }
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            background: #0d1117;
+            color: #eee;
+            font-size: 14px;
+            margin: 8px 0;
+        }
+        textarea { resize: vertical; min-height: 80px; }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        pre {
+            background: #0d1117;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 12px;
+            border: 1px solid #30363d;
+            white-space: pre-wrap;
+        }
+        .similarity-result {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 6px;
+            background: rgba(0, 212, 255, 0.1);
+            border: 1px solid #0f3460;
+        }
+        .similarity-score {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00d4ff;
+            min-width: 80px;
+            text-align: center;
+        }
+        .similarity-text {
+            flex: 1;
+            padding-left: 15px;
+        }
+        .similarity-bar {
+            height: 6px;
+            background: #0f3460;
+            border-radius: 3px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+        .similarity-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+        .progress {
+            height: 4px;
+            background: #0f3460;
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background: #00d4ff;
+            transition: width 0.3s;
+        }
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+        }
+        .tab {
+            padding: 10px 20px;
+            background: #0f3460;
+            border: none;
+            border-radius: 6px 6px 0 0;
+            color: #aaa;
+            cursor: pointer;
+        }
+        .tab.active {
+            background: #16213e;
+            color: #00d4ff;
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .embedding-viz {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2px;
+            margin: 10px 0;
+        }
+        .embedding-cell {
+            width: 8px;
+            height: 8px;
+            border-radius: 1px;
+        }
+        .doc-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .doc-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .doc-item input {
+            flex: 1;
+            margin: 0;
+        }
+        .doc-item button {
+            padding: 8px 12px;
+            margin: 0;
+        }
+        small { color: #888; }
+        a { color: #00d4ff; }
+    </style>
+</head>
+<body>
+    <h1>Text Embedding Demo</h1>
+    <p>Generate text embeddings using <a href="https://huggingface.co/Xenova/all-MiniLM-L6-v2" target="_blank">all-MiniLM-L6-v2</a> - a fast 22M parameter embedding model (~23MB)</p>
+
+    <div class="card">
+        <h2>Model Status</h2>
+        <div id="model-status" class="status info">Click "Load Model" to begin</div>
+        <div class="progress" id="progress-container" style="display: none;">
+            <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+        </div>
+        <div style="margin-top: 15px;">
+            <button id="load-model-btn">Load Model (~23MB)</button>
+        </div>
+        <small>Model files are cached in your browser after first download.</small>
+    </div>
+
+    <div class="card">
+        <div class="tabs">
+            <button class="tab active" data-tab="similarity">Similarity Search</button>
+            <button class="tab" data-tab="embedding">View Embedding</button>
+        </div>
+
+        <div id="tab-similarity" class="tab-content active">
+            <h3>Document Collection</h3>
+            <p>Add documents to search through:</p>
+            <div id="doc-list" class="doc-list">
+                <div class="doc-item">
+                    <input type="text" value="Machine learning is a subset of artificial intelligence." placeholder="Document text...">
+                    <button onclick="removeDoc(this)">X</button>
+                </div>
+                <div class="doc-item">
+                    <input type="text" value="The weather today is sunny with clear skies." placeholder="Document text...">
+                    <button onclick="removeDoc(this)">X</button>
+                </div>
+                <div class="doc-item">
+                    <input type="text" value="Python is a popular programming language." placeholder="Document text...">
+                    <button onclick="removeDoc(this)">X</button>
+                </div>
+                <div class="doc-item">
+                    <input type="text" value="Neural networks learn patterns from data." placeholder="Document text...">
+                    <button onclick="removeDoc(this)">X</button>
+                </div>
+            </div>
+            <button onclick="addDoc()" style="margin-top: 10px; background: #6c757d;">+ Add Document</button>
+
+            <h3 style="margin-top: 20px;">Search Query</h3>
+            <input type="text" id="query-input" placeholder="Enter your search query..." value="What is deep learning?">
+            <button id="search-btn" disabled>Search</button>
+
+            <div id="search-results" style="margin-top: 20px;"></div>
+        </div>
+
+        <div id="tab-embedding" class="tab-content">
+            <h3>Generate Embedding</h3>
+            <textarea id="embed-input" placeholder="Enter text to embed...">The quick brown fox jumps over the lazy dog.</textarea>
+            <button id="embed-btn" disabled>Generate Embedding</button>
+
+            <div id="embedding-result" style="margin-top: 20px;"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Console</h2>
+        <pre id="console-output"></pre>
+    </div>
+
+    <!-- Transformers.js for tokenization and inference -->
+    <script type="module">
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0';
+
+        // Configure transformers.js
+        env.allowLocalModels = false;
+
+        // Global state
+        let extractor = null;
+        let docEmbeddings = [];
+
+        const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+        const EMBEDDING_DIM = 384;
+        const MAX_LENGTH = 256;
+
+        // Console logging
+        function log(msg, type = 'info') {
+            const output = document.getElementById('console-output');
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = { error: '[ERROR]', success: '[OK]', info: '[INFO]' }[type] || '[INFO]';
+            output.textContent += `${timestamp} ${prefix} ${msg}\n`;
+            output.scrollTop = output.scrollHeight;
+            console.log(msg);
+        }
+
+        function setStatus(msg, type = 'info') {
+            const el = document.getElementById('model-status');
+            el.textContent = msg;
+            el.className = `status ${type}`;
+        }
+
+        function setProgress(pct) {
+            const container = document.getElementById('progress-container');
+            const bar = document.getElementById('progress-bar');
+            container.style.display = pct > 0 && pct < 100 ? 'block' : 'none';
+            bar.style.width = `${pct}%`;
+        }
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+            });
+        });
+
+        // Document management
+        window.addDoc = function() {
+            const list = document.getElementById('doc-list');
+            const item = document.createElement('div');
+            item.className = 'doc-item';
+            item.innerHTML = `
+                <input type="text" placeholder="Document text...">
+                <button onclick="removeDoc(this)">X</button>
+            `;
+            list.appendChild(item);
+        };
+
+        window.removeDoc = function(btn) {
+            btn.parentElement.remove();
+        };
+
+        function getDocuments() {
+            return Array.from(document.querySelectorAll('#doc-list input'))
+                .map(input => input.value.trim())
+                .filter(text => text.length > 0);
+        }
+
+        // Mean pooling for sentence embeddings
+        function meanPooling(lastHiddenState, attentionMask, dims) {
+            const [batchSize, seqLen, hiddenSize] = dims;
+            const embeddings = new Float32Array(batchSize * hiddenSize);
+
+            for (let b = 0; b < batchSize; b++) {
+                let tokenCount = 0;
+                for (let s = 0; s < seqLen; s++) {
+                    // Handle both BigInt (1n) and regular number (1) attention masks
+                    const maskVal = attentionMask[b * seqLen + s];
+                    if (maskVal === 1n || maskVal === 1) {
+                        tokenCount++;
+                        for (let h = 0; h < hiddenSize; h++) {
+                            embeddings[b * hiddenSize + h] += lastHiddenState[b * seqLen * hiddenSize + s * hiddenSize + h];
+                        }
+                    }
+                }
+                // Divide by token count
+                if (tokenCount > 0) {
+                    for (let h = 0; h < hiddenSize; h++) {
+                        embeddings[b * hiddenSize + h] /= tokenCount;
+                    }
+                }
+            }
+            return embeddings;
+        }
+
+        // L2 normalize
+        function normalize(embedding) {
+            let norm = 0;
+            for (let i = 0; i < embedding.length; i++) {
+                norm += embedding[i] * embedding[i];
+            }
+            norm = Math.sqrt(norm);
+            if (norm > 0) {
+                for (let i = 0; i < embedding.length; i++) {
+                    embedding[i] /= norm;
+                }
+            }
+            return embedding;
+        }
+
+        // Cosine similarity
+        function cosineSimilarity(a, b) {
+            let dot = 0;
+            for (let i = 0; i < a.length; i++) {
+                dot += a[i] * b[i];
+            }
+            return dot;
+        }
+
+        // Generate embedding for text
+        async function embed(text, isQuery = false) {
+            if (!extractor) {
+                throw new Error('Model not loaded');
+            }
+
+            // MiniLM doesn't need special query prefixes
+            // Use the feature extraction pipeline with mean pooling + normalization
+            const output = await extractor(text, {
+                pooling: 'mean',
+                normalize: true
+            });
+
+            // Convert to regular array
+            return Array.from(output.data);
+        }
+
+        // Visualize embedding as colored cells
+        function visualizeEmbedding(embedding) {
+            const container = document.createElement('div');
+            container.className = 'embedding-viz';
+
+            // Show first 256 dimensions
+            const showDims = Math.min(256, embedding.length);
+            for (let i = 0; i < showDims; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'embedding-cell';
+                const val = embedding[i];
+                // Map value to color (negative = blue, positive = red)
+                const intensity = Math.min(255, Math.abs(val) * 500);
+                if (val < 0) {
+                    cell.style.background = `rgb(0, ${intensity}, ${255 - intensity})`;
+                } else {
+                    cell.style.background = `rgb(${255 - intensity}, ${intensity}, 0)`;
+                }
+                cell.title = `dim[${i}] = ${val.toFixed(4)}`;
+                container.appendChild(cell);
+            }
+            return container;
+        }
+
+        // Load model
+        document.getElementById('load-model-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('load-model-btn');
+            btn.disabled = true;
+
+            try {
+                setStatus('Loading model pipeline...', 'loading');
+                setProgress(10);
+                log('Initializing feature extraction pipeline...');
+
+                // Use pipeline API which handles tokenizer + model loading together
+                extractor = await pipeline('feature-extraction', MODEL_ID, {
+                    progress_callback: (progress) => {
+                        if (progress.status === 'progress' && progress.progress) {
+                            setProgress(10 + progress.progress * 0.9);
+                            log(`Loading: ${progress.file} - ${Math.round(progress.progress)}%`);
+                        } else if (progress.status === 'done') {
+                            log(`Loaded: ${progress.file}`, 'success');
+                        }
+                    }
+                });
+
+                setProgress(100);
+                setStatus(`Model loaded! Ready for inference.`, 'success');
+                log('Model loaded successfully', 'success');
+
+                // Enable buttons
+                document.getElementById('search-btn').disabled = false;
+                document.getElementById('embed-btn').disabled = false;
+
+            } catch (err) {
+                setStatus(`Error: ${err.message}`, 'error');
+                log(`Error: ${err.message}`, 'error');
+                console.error(err);
+                btn.disabled = false;
+            }
+        });
+
+        // Search functionality
+        document.getElementById('search-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('search-btn');
+            const query = document.getElementById('query-input').value.trim();
+            const docs = getDocuments();
+
+            if (!query) {
+                alert('Please enter a search query');
+                return;
+            }
+            if (docs.length === 0) {
+                alert('Please add at least one document');
+                return;
+            }
+
+            btn.disabled = true;
+            const resultsContainer = document.getElementById('search-results');
+            resultsContainer.innerHTML = '<div class="status loading">Computing embeddings...</div>';
+
+            try {
+                log(`Searching for: "${query}"`);
+                log(`Computing embeddings for ${docs.length} documents...`);
+
+                // Embed query
+                const queryEmbedding = await embed(query, true);
+                log('Query embedding computed');
+
+                // Embed documents
+                const results = [];
+                for (let i = 0; i < docs.length; i++) {
+                    const docEmbedding = await embed(docs[i], false);
+                    const similarity = cosineSimilarity(queryEmbedding, docEmbedding);
+                    results.push({ text: docs[i], similarity, index: i });
+                    log(`Doc ${i + 1}: similarity = ${similarity.toFixed(4)}`);
+                }
+
+                // Sort by similarity (descending)
+                results.sort((a, b) => b.similarity - a.similarity);
+
+                // Display results
+                resultsContainer.innerHTML = '<h3>Search Results</h3>';
+                results.forEach((result, rank) => {
+                    const pct = Math.max(0, result.similarity * 100);
+                    const div = document.createElement('div');
+                    div.className = 'similarity-result';
+                    div.innerHTML = `
+                        <div class="similarity-score">${(result.similarity * 100).toFixed(1)}%</div>
+                        <div class="similarity-text">
+                            <div><strong>#${rank + 1}</strong> ${result.text}</div>
+                            <div class="similarity-bar">
+                                <div class="similarity-bar-fill" style="width: ${pct}%"></div>
+                            </div>
+                        </div>
+                    `;
+                    resultsContainer.appendChild(div);
+                });
+
+                log('Search complete', 'success');
+
+            } catch (err) {
+                resultsContainer.innerHTML = `<div class="status error">Error: ${err.message}</div>`;
+                log(`Error: ${err.message}`, 'error');
+            }
+
+            btn.disabled = false;
+        });
+
+        // Embedding visualization
+        document.getElementById('embed-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('embed-btn');
+            const text = document.getElementById('embed-input').value.trim();
+
+            if (!text) {
+                alert('Please enter some text');
+                return;
+            }
+
+            btn.disabled = true;
+            const container = document.getElementById('embedding-result');
+            container.innerHTML = '<div class="status loading">Computing embedding...</div>';
+
+            try {
+                log(`Embedding: "${text.substring(0, 50)}..."`);
+                const start = performance.now();
+                const embedding = await embed(text, false);
+                const elapsed = performance.now() - start;
+
+                log(`Embedding computed in ${elapsed.toFixed(1)}ms`, 'success');
+
+                // Stats
+                let min = Infinity, max = -Infinity, sum = 0;
+                for (const v of embedding) {
+                    min = Math.min(min, v);
+                    max = Math.max(max, v);
+                    sum += v;
+                }
+                const mean = sum / embedding.length;
+
+                container.innerHTML = `
+                    <h3>Embedding Result</h3>
+                    <p>
+                        <strong>Dimensions:</strong> ${embedding.length}<br>
+                        <strong>Inference time:</strong> ${elapsed.toFixed(1)}ms<br>
+                        <strong>Range:</strong> [${min.toFixed(4)}, ${max.toFixed(4)}]<br>
+                        <strong>Mean:</strong> ${mean.toFixed(6)}
+                    </p>
+                    <h4>Visualization (first 256 dims)</h4>
+                    <small>Blue = negative, Green = near zero, Red = positive</small>
+                `;
+                container.appendChild(visualizeEmbedding(embedding));
+
+                // Show first 20 values
+                const preview = Array.from(embedding.slice(0, 20)).map(v => v.toFixed(4)).join(', ');
+                container.innerHTML += `
+                    <h4>First 20 values</h4>
+                    <pre>[${preview}, ...]</pre>
+                `;
+
+            } catch (err) {
+                container.innerHTML = `<div class="status error">Error: ${err.message}</div>`;
+                log(`Error: ${err.message}`, 'error');
+            }
+
+            btn.disabled = false;
+        });
+
+        log('Text Embedding Demo loaded');
+        log('Click "Load Model" to download the embedding model');
+    </script>
+</body>
+</html>

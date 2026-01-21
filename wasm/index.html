@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ONNX Zig WASM Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1, h2 {
+            color: #00d4ff;
+        }
+        .card {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #0f3460;
+        }
+        .status {
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+        .status.success {
+            background: #0f5132;
+            border: 1px solid #198754;
+        }
+        .status.error {
+            background: #842029;
+            border: 1px solid #dc3545;
+        }
+        .status.info {
+            background: #055160;
+            border: 1px solid #0dcaf0;
+        }
+        button {
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #00b4d8;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        pre {
+            background: #0d1117;
+            padding: 15px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 13px;
+            border: 1px solid #30363d;
+        }
+        code {
+            color: #58a6ff;
+        }
+        .test-result {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 4px;
+        }
+        .test-result.pass {
+            background: rgba(40, 167, 69, 0.2);
+        }
+        .test-result.fail {
+            background: rgba(220, 53, 69, 0.2);
+        }
+        .test-result .icon {
+            margin-right: 10px;
+            font-size: 18px;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .file-label {
+            background: #6c757d;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-block;
+        }
+        .file-label:hover {
+            background: #5a6268;
+        }
+        #output {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>ONNX Zig WASM Demo</h1>
+    <p>Zig tensor operations + ONNX Runtime Web inference in the browser</p>
+
+    <div class="card" style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);">
+        <h2 style="margin-top: 0;">Featured Demos</h2>
+        <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 200px;">
+                <h3 style="color: #00d4ff; margin-top: 0;">MNIST Digit Recognition</h3>
+                <p>Draw handwritten digits and watch the AI classify them in real-time.</p>
+                <a href="mnist_demo.html" style="display: inline-block; background: #00d4ff; color: #000; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold;">Try MNIST Demo</a>
+            </div>
+            <div style="flex: 1; min-width: 200px;">
+                <h3 style="color: #00ff88; margin-top: 0;">Text Embeddings</h3>
+                <p>Generate text embeddings and search documents using semantic similarity.</p>
+                <a href="embedding_demo.html" style="display: inline-block; background: #00ff88; color: #000; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold;">Try Embedding Demo</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Module Status</h2>
+        <div id="module-status" class="status info">Loading WASM module...</div>
+        <div id="memory-info"></div>
+    </div>
+
+    <div class="card">
+        <h2>Tensor Operations Tests</h2>
+        <div class="controls">
+            <button id="run-tests" disabled>Run All Tests</button>
+        </div>
+        <div id="test-results"></div>
+    </div>
+
+    <div class="card">
+        <h2>ONNX Inference Demo</h2>
+        <div class="controls">
+            <label class="file-label">
+                Load ONNX Model
+                <input type="file" id="model-input" accept=".onnx">
+            </label>
+            <button id="run-inference" disabled>Run Inference</button>
+        </div>
+        <div id="model-status" class="status info" style="display: none;"></div>
+        <pre id="inference-output" style="display: none;"></pre>
+    </div>
+
+    <div class="card">
+        <h2>Console Output</h2>
+        <pre id="output"></pre>
+    </div>
+
+    <!-- ONNX Runtime Web (loaded from CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
+
+    <!-- Zig WASM Loader -->
+    <script src="loader.js"></script>
+
+    <script>
+        // Global state
+        let onnxZig = null;
+        let ortSession = null;
+
+        // Console output helper
+        function log(msg, type = 'info') {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = type === 'error' ? '[ERROR]' : type === 'success' ? '[OK]' : '[INFO]';
+            output.textContent += `${timestamp} ${prefix} ${msg}\n`;
+            output.scrollTop = output.scrollHeight;
+            console.log(msg);
+        }
+
+        // Test result helper
+        function addTestResult(name, passed, details = '') {
+            const container = document.getElementById('test-results');
+            const div = document.createElement('div');
+            div.className = `test-result ${passed ? 'pass' : 'fail'}`;
+            div.innerHTML = `
+                <span class="icon">${passed ? '✓' : '✗'}</span>
+                <span><strong>${name}</strong>${details ? `: ${details}` : ''}</span>
+            `;
+            container.appendChild(div);
+        }
+
+        // Initialize WASM module
+        async function initModule() {
+            const statusEl = document.getElementById('module-status');
+
+            try {
+                log('Loading WASM module...');
+                onnxZig = await OnnxZig.load('onnx_zig.wasm');
+
+                statusEl.textContent = 'WASM module loaded successfully!';
+                statusEl.className = 'status success';
+
+                // Show memory info
+                const memInfo = onnxZig.getMemoryInfo();
+                document.getElementById('memory-info').innerHTML = `
+                    <small>Memory: ${memInfo.pages} pages (${memInfo.mb.toFixed(2)} MB)</small>
+                `;
+
+                // Enable buttons
+                document.getElementById('run-tests').disabled = false;
+
+                log('Module ready', 'success');
+            } catch (err) {
+                statusEl.textContent = `Failed to load WASM: ${err.message}`;
+                statusEl.className = 'status error';
+                log(`Error: ${err.message}`, 'error');
+            }
+        }
+
+        // Run tensor tests
+        function runTests() {
+            const container = document.getElementById('test-results');
+            container.innerHTML = '';
+
+            log('Running tensor tests...');
+
+            // Test 1: Create tensor
+            try {
+                const t1 = onnxZig.tensor.create([2, 3]);
+                const valid = t1 >= 0;
+                addTestResult('Create tensor [2,3]', valid, valid ? `handle=${t1}` : 'failed');
+                if (valid) onnxZig.tensor.free(t1);
+            } catch (e) {
+                addTestResult('Create tensor', false, e.message);
+            }
+
+            // Test 2: Create from array
+            try {
+                const data = [1, 2, 3, 4, 5, 6];
+                const t2 = onnxZig.tensor.fromArray(data, [2, 3]);
+                const retrieved = onnxZig.tensor.toArray(t2);
+                const match = JSON.stringify(data) === JSON.stringify(retrieved);
+                addTestResult('From array round-trip', match, match ? 'data matches' : 'data mismatch');
+                onnxZig.tensor.free(t2);
+            } catch (e) {
+                addTestResult('From array', false, e.message);
+            }
+
+            // Test 3: Tensor ones
+            try {
+                const t3 = onnxZig.tensor.ones([4]);
+                const data = onnxZig.tensor.toArray(t3);
+                const allOnes = data.every(v => v === 1);
+                addTestResult('Tensor ones', allOnes, `[${data.join(', ')}]`);
+                onnxZig.tensor.free(t3);
+            } catch (e) {
+                addTestResult('Tensor ones', false, e.message);
+            }
+
+            // Test 4: Tensor add
+            try {
+                const a = onnxZig.tensor.fromArray([1, 2, 3, 4], [4]);
+                const b = onnxZig.tensor.fromArray([0.5, 0.5, 0.5, 0.5], [4]);
+                const c = onnxZig.tensor.add(a, b);
+                const result = onnxZig.tensor.toArray(c);
+                const expected = [1.5, 2.5, 3.5, 4.5];
+                const match = result.every((v, i) => Math.abs(v - expected[i]) < 0.001);
+                addTestResult('Tensor add', match, `[${result.map(v => v.toFixed(1)).join(', ')}]`);
+                onnxZig.tensor.free(a);
+                onnxZig.tensor.free(b);
+                onnxZig.tensor.free(c);
+            } catch (e) {
+                addTestResult('Tensor add', false, e.message);
+            }
+
+            // Test 5: ReLU
+            try {
+                const input = onnxZig.tensor.fromArray([-2, -1, 0, 1, 2], [5]);
+                const output = onnxZig.tensor.relu(input);
+                const result = onnxZig.tensor.toArray(output);
+                const expected = [0, 0, 0, 1, 2];
+                const match = result.every((v, i) => Math.abs(v - expected[i]) < 0.001);
+                addTestResult('ReLU activation', match, `[${result.join(', ')}]`);
+                onnxZig.tensor.free(input);
+                onnxZig.tensor.free(output);
+            } catch (e) {
+                addTestResult('ReLU', false, e.message);
+            }
+
+            // Test 6: Softmax
+            try {
+                const input = onnxZig.tensor.fromArray([1, 2, 3], [3]);
+                const output = onnxZig.tensor.softmax(input);
+                const result = onnxZig.tensor.toArray(output);
+                const sum = result.reduce((a, b) => a + b, 0);
+                const sumToOne = Math.abs(sum - 1.0) < 0.001;
+                addTestResult('Softmax (sum=1)', sumToOne, `sum=${sum.toFixed(4)}, [${result.map(v => v.toFixed(3)).join(', ')}]`);
+                onnxZig.tensor.free(input);
+                onnxZig.tensor.free(output);
+            } catch (e) {
+                addTestResult('Softmax', false, e.message);
+            }
+
+            // Test 7: Argmax
+            try {
+                const input = onnxZig.tensor.fromArray([0.1, 0.3, 0.9, 0.2, 0.5], [5]);
+                const idx = onnxZig.tensor.argmax(input);
+                addTestResult('Argmax', idx === 2, `index=${idx} (expected 2)`);
+                onnxZig.tensor.free(input);
+            } catch (e) {
+                addTestResult('Argmax', false, e.message);
+            }
+
+            // Test 8: Scale
+            try {
+                const input = onnxZig.tensor.fromArray([1, 2, 3, 4], [4]);
+                const scaled = onnxZig.tensor.scale(input, 2.5);
+                const result = onnxZig.tensor.toArray(scaled);
+                const expected = [2.5, 5, 7.5, 10];
+                const match = result.every((v, i) => Math.abs(v - expected[i]) < 0.001);
+                addTestResult('Scale by 2.5', match, `[${result.join(', ')}]`);
+                onnxZig.tensor.free(input);
+                onnxZig.tensor.free(scaled);
+            } catch (e) {
+                addTestResult('Scale', false, e.message);
+            }
+
+            log('Tests complete', 'success');
+        }
+
+        // Handle model file upload
+        document.getElementById('model-input').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const statusEl = document.getElementById('model-status');
+            statusEl.style.display = 'block';
+            statusEl.className = 'status info';
+            statusEl.textContent = `Loading model: ${file.name}...`;
+
+            try {
+                const buffer = await file.arrayBuffer();
+                await onnxZig.ort.init();
+                ortSession = await onnxZig.ort.createSession(buffer);
+
+                statusEl.className = 'status success';
+                statusEl.textContent = `Model loaded: ${file.name} | Inputs: ${ortSession.inputNames.join(', ')} | Outputs: ${ortSession.outputNames.join(', ')}`;
+
+                document.getElementById('run-inference').disabled = false;
+                log(`Model loaded: ${file.name}`, 'success');
+            } catch (err) {
+                statusEl.className = 'status error';
+                statusEl.textContent = `Error loading model: ${err.message}`;
+                log(`Error: ${err.message}`, 'error');
+            }
+        });
+
+        // Run inference
+        document.getElementById('run-inference').addEventListener('click', async () => {
+            if (!ortSession) return;
+
+            const outputEl = document.getElementById('inference-output');
+            outputEl.style.display = 'block';
+
+            try {
+                log('Running inference...');
+
+                // Create dummy input (you would replace this with actual data)
+                // For demo, create a [1, 4] tensor with random values
+                const inputData = Array.from({ length: 4 }, () => Math.random());
+                const inputTensor = onnxZig.tensor.fromArray(inputData, [1, 4]);
+
+                const inputs = {};
+                inputs[ortSession.inputNames[0]] = inputTensor;
+
+                const outputs = await onnxZig.ort.run(ortSession, inputs);
+
+                // Display results
+                let resultText = 'Inference Results:\n\n';
+                for (const [name, handle] of Object.entries(outputs)) {
+                    const data = onnxZig.tensor.toArray(handle);
+                    const shape = onnxZig.tensor.shape(handle);
+                    resultText += `${name} (shape: [${shape.join(', ')}]):\n`;
+                    resultText += `  [${data.map(v => v.toFixed(4)).join(', ')}]\n\n`;
+                    onnxZig.tensor.free(handle);
+                }
+
+                outputEl.textContent = resultText;
+                onnxZig.tensor.free(inputTensor);
+
+                log('Inference complete', 'success');
+            } catch (err) {
+                outputEl.textContent = `Error: ${err.message}`;
+                log(`Error: ${err.message}`, 'error');
+            }
+        });
+
+        // Event listeners
+        document.getElementById('run-tests').addEventListener('click', runTests);
+
+        // Initialize on load
+        window.addEventListener('load', initModule);
+    </script>
+</body>
+</html>

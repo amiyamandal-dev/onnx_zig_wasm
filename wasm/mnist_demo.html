@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MNIST Digit Recognition - ONNX Zig WASM</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #0a0a1a;
+            color: #eee;
+        }
+        h1 {
+            color: #00d4ff;
+            text-align: center;
+        }
+        h2 {
+            color: #00d4ff;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .container {
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #0f3460;
+        }
+        .draw-area {
+            text-align: center;
+        }
+        #canvas {
+            border: 3px solid #00d4ff;
+            border-radius: 8px;
+            cursor: crosshair;
+            background: #000;
+            touch-action: none;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            justify-content: center;
+        }
+        button {
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #00b4d8;
+            transform: translateY(-1px);
+        }
+        button:disabled {
+            background: #444;
+            cursor: not-allowed;
+            transform: none;
+        }
+        button.secondary {
+            background: #6c757d;
+            color: white;
+        }
+        button.secondary:hover {
+            background: #5a6268;
+        }
+        .result-area {
+            min-width: 300px;
+        }
+        .prediction {
+            text-align: center;
+            padding: 20px;
+        }
+        .predicted-digit {
+            font-size: 120px;
+            font-weight: bold;
+            color: #00d4ff;
+            line-height: 1;
+            text-shadow: 0 0 30px rgba(0, 212, 255, 0.5);
+        }
+        .confidence {
+            font-size: 18px;
+            color: #888;
+            margin-top: 10px;
+        }
+        .probabilities {
+            margin-top: 20px;
+        }
+        .prob-bar {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+        .prob-label {
+            width: 30px;
+            font-weight: bold;
+            color: #888;
+        }
+        .prob-track {
+            flex: 1;
+            height: 24px;
+            background: #0d1117;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 0 10px;
+        }
+        .prob-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .prob-value {
+            width: 50px;
+            text-align: right;
+            font-size: 12px;
+            color: #888;
+        }
+        .status {
+            padding: 10px 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            font-family: monospace;
+            font-size: 13px;
+        }
+        .status.loading {
+            background: #055160;
+            border: 1px solid #0dcaf0;
+        }
+        .status.success {
+            background: #0f5132;
+            border: 1px solid #198754;
+        }
+        .status.error {
+            background: #842029;
+            border: 1px solid #dc3545;
+        }
+        .preview-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 15px;
+            justify-content: center;
+        }
+        .preview-label {
+            color: #888;
+            font-size: 12px;
+        }
+        #preview {
+            border: 1px solid #333;
+            border-radius: 4px;
+            image-rendering: pixelated;
+        }
+        .instructions {
+            background: #0d1117;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 13px;
+            color: #888;
+        }
+        .instructions h3 {
+            color: #00d4ff;
+            margin-top: 0;
+            font-size: 14px;
+        }
+        .instructions ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .tech-stack {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        .tech-badge {
+            background: #1a1a2e;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #00d4ff;
+            border: 1px solid #0f3460;
+        }
+    </style>
+</head>
+<body>
+    <h1>MNIST Digit Recognition</h1>
+    <p class="subtitle">Draw a digit (0-9) and watch the AI classify it in real-time</p>
+
+    <div id="status" class="status loading">Loading WASM module and ONNX model...</div>
+
+    <div class="container">
+        <div class="card draw-area">
+            <h2>Draw Here</h2>
+            <canvas id="canvas" width="280" height="280"></canvas>
+            <div class="controls">
+                <button id="clear-btn" class="secondary">Clear</button>
+                <button id="predict-btn" disabled>Predict</button>
+            </div>
+            <div class="preview-container">
+                <span class="preview-label">Model Input (28x28):</span>
+                <canvas id="preview" width="28" height="28"></canvas>
+            </div>
+        </div>
+
+        <div class="card result-area">
+            <h2>Prediction</h2>
+            <div class="prediction">
+                <div class="predicted-digit" id="predicted-digit">?</div>
+                <div class="confidence" id="confidence">Draw a digit to start</div>
+            </div>
+            <div class="probabilities" id="probabilities">
+                <!-- Probability bars will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <div class="card instructions">
+        <h3>How it works</h3>
+        <ul>
+            <li>Draw a single digit (0-9) in the canvas area</li>
+            <li>The image is preprocessed using <strong>Zig WASM</strong> (tensor operations)</li>
+            <li>Inference runs via <strong>ONNX Runtime Web</strong> (97% accuracy MLP model)</li>
+            <li>Results show confidence scores for each digit class</li>
+        </ul>
+        <div class="tech-stack">
+            <span class="tech-badge">Zig WASM (~11KB)</span>
+            <span class="tech-badge">ONNX Runtime Web</span>
+            <span class="tech-badge">2-Layer MLP</span>
+            <span class="tech-badge">109K Parameters</span>
+        </div>
+    </div>
+
+    <!-- ONNX Runtime Web -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js"></script>
+
+    <!-- Zig WASM Loader -->
+    <script src="loader.js"></script>
+
+    <script>
+        // Global state
+        let onnxZig = null;
+        let session = null;
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        // Canvas setup
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const preview = document.getElementById('preview');
+        const previewCtx = preview.getContext('2d');
+
+        // Configure drawing context
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 20;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // Initialize probability bars
+        function initProbBars() {
+            const container = document.getElementById('probabilities');
+            container.innerHTML = '';
+            for (let i = 0; i < 10; i++) {
+                const bar = document.createElement('div');
+                bar.className = 'prob-bar';
+                bar.innerHTML = `
+                    <span class="prob-label">${i}</span>
+                    <div class="prob-track">
+                        <div class="prob-fill" id="prob-fill-${i}" style="width: 0%"></div>
+                    </div>
+                    <span class="prob-value" id="prob-value-${i}">0%</span>
+                `;
+                container.appendChild(bar);
+            }
+        }
+
+        // Update probability display
+        function updateProbabilities(probs) {
+            const maxProb = Math.max(...probs);
+            for (let i = 0; i < 10; i++) {
+                const fill = document.getElementById(`prob-fill-${i}`);
+                const value = document.getElementById(`prob-value-${i}`);
+                const prob = probs[i] * 100;
+
+                fill.style.width = `${prob}%`;
+                value.textContent = `${prob.toFixed(1)}%`;
+
+                // Highlight the predicted digit
+                if (probs[i] === maxProb) {
+                    fill.style.background = 'linear-gradient(90deg, #00ff88, #00d4ff)';
+                } else {
+                    fill.style.background = 'linear-gradient(90deg, #00d4ff, #00ff88)';
+                    fill.style.opacity = '0.5';
+                }
+            }
+        }
+
+        // Drawing handlers
+        function startDrawing(e) {
+            isDrawing = true;
+            const pos = getPosition(e);
+            lastX = pos.x;
+            lastY = pos.y;
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            e.preventDefault();
+
+            const pos = getPosition(e);
+            ctx.beginPath();
+            ctx.moveTo(lastX, lastY);
+            ctx.lineTo(pos.x, pos.y);
+            ctx.stroke();
+
+            lastX = pos.x;
+            lastY = pos.y;
+
+            updatePreview();
+        }
+
+        function stopDrawing() {
+            isDrawing = false;
+        }
+
+        function getPosition(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+            const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+            return { x, y };
+        }
+
+        // Update 28x28 preview
+        function updatePreview() {
+            previewCtx.drawImage(canvas, 0, 0, 28, 28);
+        }
+
+        // Clear canvas
+        function clearCanvas() {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            previewCtx.fillStyle = '#000';
+            previewCtx.fillRect(0, 0, 28, 28);
+
+            document.getElementById('predicted-digit').textContent = '?';
+            document.getElementById('confidence').textContent = 'Draw a digit to start';
+
+            // Reset probability bars
+            for (let i = 0; i < 10; i++) {
+                const fill = document.getElementById(`prob-fill-${i}`);
+                const value = document.getElementById(`prob-value-${i}`);
+                if (fill) {
+                    fill.style.width = '0%';
+                    fill.style.opacity = '1';
+                }
+                if (value) value.textContent = '0%';
+            }
+        }
+
+        // Get image data as normalized float array
+        function getImageData() {
+            // Get 28x28 image
+            previewCtx.drawImage(canvas, 0, 0, 28, 28);
+            const imageData = previewCtx.getImageData(0, 0, 28, 28);
+            const data = imageData.data;
+
+            // Convert to grayscale and normalize
+            const floatData = new Float32Array(28 * 28);
+            for (let i = 0; i < 28 * 28; i++) {
+                // Get grayscale value (R channel, since we draw in white on black)
+                const gray = data[i * 4] / 255.0;
+                // Normalize using MNIST mean (0.1307) and std (0.3081)
+                floatData[i] = (gray - 0.1307) / 0.3081;
+            }
+
+            return floatData;
+        }
+
+        // Softmax function
+        function softmax(logits) {
+            const maxLogit = Math.max(...logits);
+            const exps = logits.map(x => Math.exp(x - maxLogit));
+            const sum = exps.reduce((a, b) => a + b, 0);
+            return exps.map(x => x / sum);
+        }
+
+        // Run prediction
+        async function predict() {
+            if (!session) return;
+
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = 'Running inference...';
+            statusEl.className = 'status loading';
+
+            try {
+                // Get preprocessed image data
+                const imageData = getImageData();
+
+                // Create input tensor [1, 1, 28, 28]
+                const inputTensor = new ort.Tensor('float32', imageData, [1, 1, 28, 28]);
+
+                // Run inference
+                const startTime = performance.now();
+                const results = await session.run({ input: inputTensor });
+                const inferenceTime = performance.now() - startTime;
+
+                // Get output logits
+                const logits = Array.from(results.output.data);
+
+                // Apply softmax to get probabilities
+                const probs = softmax(logits);
+
+                // Find predicted digit
+                const predictedDigit = probs.indexOf(Math.max(...probs));
+                const confidence = probs[predictedDigit] * 100;
+
+                // Update UI
+                document.getElementById('predicted-digit').textContent = predictedDigit;
+                document.getElementById('confidence').textContent =
+                    `${confidence.toFixed(1)}% confidence (${inferenceTime.toFixed(1)}ms)`;
+
+                updateProbabilities(probs);
+
+                statusEl.textContent = `Inference complete in ${inferenceTime.toFixed(1)}ms`;
+                statusEl.className = 'status success';
+            } catch (err) {
+                console.error('Prediction error:', err);
+                statusEl.textContent = `Error: ${err.message}`;
+                statusEl.className = 'status error';
+            }
+        }
+
+        // Initialize
+        async function init() {
+            const statusEl = document.getElementById('status');
+            initProbBars();
+
+            try {
+                // Load WASM module
+                statusEl.textContent = 'Loading Zig WASM module...';
+                onnxZig = await OnnxZig.load('onnx_zig.wasm');
+                console.log('WASM module loaded');
+
+                // Initialize ONNX Runtime
+                statusEl.textContent = 'Loading ONNX model...';
+                await onnxZig.ort.init();
+
+                // Load MNIST model
+                session = await onnxZig.ort.createSession('mnist.onnx');
+                console.log('MNIST model loaded');
+                console.log('Input names:', session.inputNames);
+                console.log('Output names:', session.outputNames);
+
+                statusEl.textContent = 'Ready! Draw a digit and click Predict.';
+                statusEl.className = 'status success';
+
+                document.getElementById('predict-btn').disabled = false;
+            } catch (err) {
+                console.error('Init error:', err);
+                statusEl.textContent = `Error: ${err.message}`;
+                statusEl.className = 'status error';
+            }
+        }
+
+        // Event listeners
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', stopDrawing);
+        canvas.addEventListener('mouseout', stopDrawing);
+
+        // Touch events for mobile
+        canvas.addEventListener('touchstart', startDrawing);
+        canvas.addEventListener('touchmove', draw);
+        canvas.addEventListener('touchend', stopDrawing);
+
+        document.getElementById('clear-btn').addEventListener('click', clearCanvas);
+        document.getElementById('predict-btn').addEventListener('click', predict);
+
+        // Initialize on load
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
