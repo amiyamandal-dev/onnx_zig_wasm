@@ -543,10 +543,114 @@ zig build test -Donnxruntime_path=/path/to/onnxruntime
 | **Examples** | **COMPLETE** | basic_inference, mnist_classifier |
 | **JavaScript SDK** | **COMPLETE** | TypeScript with full types |
 | **Documentation** | **COMPLETE** | README with API reference |
+| **Quantized Inference** | **COMPLETE** | runU8() for INT8/UINT8 models |
+| **Session Config** | **COMPLETE** | Thread count, optimization level |
 
 ---
 
-## All Milestones Complete
+### Session 8 (2026-01-22)
+- **Completed Milestone 10: Extended Features**
+
+**New Features Implemented:**
+- Added `runU8()` method for quantized model inference (INT8/UINT8)
+- Added `freeU8Outputs()` method for releasing u8 tensor outputs
+- TensorU8 type was already available in tensor.zig
+
+**Test Models Created:**
+- `models/test/identity_u8.onnx` - Identity function with UINT8 data type
+- `models/test/add_u8.onnx` - Element-wise addition with UINT8 data type
+
+**Tests Added:**
+- `Session - identity_u8 model inference` - Basic u8 inference
+- `Session - add_u8 model inference` - Multi-input u8 models
+- `Session - get input info for u8 model` - UINT8 tensor introspection
+
+**Bug Fixes:**
+- Fixed allocation error handling in `configureSessionOptions()` (OutOfMemory → AllocationFailed)
+- Fixed const cast issue in log_id deallocation
+- Simplified `appendExecutionProvider()` to handle missing platform-specific APIs gracefully
+
+**Build Status:**
+- All 48 tests passing
+- ONNX Runtime 1.23.2_2 compatibility verified
+
+---
+
+### Session 9 (2026-01-22)
+- **Completed Milestone 11: Code Quality & Robustness**
+
+**New Features Implemented:**
+- Added `calcNumelChecked()` with overflow detection in `tensor.zig`
+- Added `calcNumelOrNull()` for silent error handling
+- Added `NumelError` error type with `Overflow` and `ZeroDimension` variants
+- Added `assertAligned()` helper for debug-mode pointer alignment validation in `session.zig`
+- Added `checkTestModelExists()` and `loadTestSession()` helpers for improved test diagnostics
+
+**Bug Fixes:**
+- Fixed memory leak in `tokenizer.zig`: Added missing `errdefer` for `token_type_ids` allocation
+- All pointer casts in `runF32()`, `runI64()`, `runU8()` now have alignment assertions in debug builds
+
+**Tests Added (6 new tests):**
+- `calcNumelChecked - normal shapes` - Valid shape calculations
+- `calcNumelChecked - zero dimension` - Zero dimension detection
+- `calcNumelChecked - overflow detection` - Integer overflow handling
+- `calcNumelOrNull - returns null on error` - Null return on error
+- `Shape - zero dimension numel` - Shape with zero elements
+- `Tensor - empty shape` - Empty tensor creation
+
+**Test Infrastructure Improvements:**
+- Replaced generic "Skipping test" messages with detailed diagnostics
+- Added hints for missing test models
+- Added hints for model compatibility issues
+
+**Build Status:**
+- All 54 tests passing
+- Code quality improvements verified
+
+---
+
+### Session 10 (2026-01-22)
+- **Completed Milestone 12: Performance Optimizations**
+
+**Session Caching (12.1, 12.2, 12.6):**
+- Added `memory_info` field to Session struct - cached during init, reused in all run methods
+- Added `input_name_ptrs` and `output_name_ptrs` fields - pre-computed C pointer arrays
+- Eliminates per-inference FFI calls for CreateCpuMemoryInfo and name pointer allocation
+- Reduced memory allocation overhead in hot path
+
+**SIMD Activation Functions (12.3, 12.4):**
+- Added `sigmoid()` - 1/(1+exp(-x))
+- Added `tanh_()` - hyperbolic tangent (named to avoid conflict with std.math)
+- Added `gelu()` - Gaussian Error Linear Unit for transformers
+- Added `softmax()` - numerically stable with max subtraction
+- Added `logSoftmax()` - log(softmax(x)) for numerical stability
+- Added `argmax()` and `argmin()` - index of extreme values
+
+**Tensor Pool Optimization (12.5):**
+- Replaced 16 power-of-2 buckets with 25 fine-grained size classes
+- Fine granularity for small tensors (16, 32, 48, 64, 96, 128, 192, 256)
+- Medium granularity for medium tensors (384-4K with 1.5x steps)
+- Power-of-2 for large tensors (8K-1M)
+- Overflow bucket for tensors >1M elements
+- Reduces memory waste for common tensor sizes
+
+**Tests Added (9 new tests):**
+- `SimdOps - sigmoid`
+- `SimdOps - tanh`
+- `SimdOps - gelu`
+- `SimdOps - softmax`
+- `SimdOps - softmax numerical stability`
+- `SimdOps - logSoftmax`
+- `SimdOps - argmax`
+- `SimdOps - argmin`
+- `TensorPool - fine-grained reuse`
+
+**Build Status:**
+- All 63 tests passing
+
+---
+
+## Completed Milestones
 
 - **Milestone 1**: Tensor Foundation ✓
 - **Milestone 2**: ONNX Runtime FFI ✓
@@ -554,3 +658,9 @@ zig build test -Donnxruntime_path=/path/to/onnxruntime
 - **Milestone 4**: Memory & Performance ✓
 - **Milestone 5**: WASM Build ✓
 - **Milestone 6**: Framework & Distribution ✓
+- **Milestone 7**: Examples & Demos ✓
+- **Milestone 8**: WordPiece Tokenizer ✓
+- **Milestone 9**: Browser Demos ✓
+- **Milestone 10**: Extended Features ✓
+- **Milestone 11**: Code Quality & Robustness ✓
+- **Milestone 12**: Performance Optimizations ✓

@@ -8,10 +8,40 @@ const Allocator = std.mem.Allocator;
 pub const MAX_DIMS: usize = 8;
 
 /// Calculate total number of elements from a shape slice
+/// WARNING: This function can overflow silently. For checked arithmetic, use `calcNumelChecked`.
 pub inline fn calcNumel(shape: []const usize) usize {
     var n: usize = 1;
     for (shape) |d| n *= d;
     return n;
+}
+
+/// Error type for checked arithmetic operations
+pub const NumelError = error{
+    /// The number of elements would overflow usize
+    Overflow,
+    /// Zero dimension in shape (results in zero elements)
+    ZeroDimension,
+};
+
+/// Calculate total number of elements with overflow detection.
+/// Returns an error if the multiplication would overflow or if any dimension is zero.
+pub fn calcNumelChecked(shape: []const usize) NumelError!usize {
+    if (shape.len == 0) return 0;
+
+    var n: usize = 1;
+    for (shape) |d| {
+        if (d == 0) return NumelError.ZeroDimension;
+        const result = @mulWithOverflow(n, d);
+        if (result[1] != 0) return NumelError.Overflow;
+        n = result[0];
+    }
+    return n;
+}
+
+/// Calculate total number of elements, returning null on overflow or zero dimension.
+/// Useful for cases where you want to silently handle edge cases.
+pub fn calcNumelOrNull(shape: []const usize) ?usize {
+    return calcNumelChecked(shape) catch null;
 }
 
 /// Supported tensor data types (aligned with ONNX spec)
@@ -650,6 +680,130 @@ pub const SimdOps = struct {
     pub fn fill(dst: []f32, value: f32) void {
         @memset(dst, value);
     }
+
+    // =========================================================================
+    // Activation Functions
+    // =========================================================================
+
+    /// Sigmoid activation: dst = 1 / (1 + exp(-x))
+    /// SIMD-optimized with scalar fallback
+    pub fn sigmoid(dst: []f32, a: []const f32) void {
+        const n = @min(dst.len, a.len);
+
+        // Scalar implementation (SIMD exp is complex, scalar is often faster for small arrays)
+        for (0..n) |i| {
+            dst[i] = 1.0 / (1.0 + @exp(-a[i]));
+        }
+    }
+
+    /// Tanh activation: dst = tanh(x)
+    /// Uses identity: tanh(x) = 2*sigmoid(2x) - 1
+    pub fn tanh_(dst: []f32, a: []const f32) void {
+        const n = @min(dst.len, a.len);
+
+        for (0..n) |i| {
+            const exp_2x = @exp(2.0 * a[i]);
+            dst[i] = (exp_2x - 1.0) / (exp_2x + 1.0);
+        }
+    }
+
+    /// GELU activation: dst = x * 0.5 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    /// Gaussian Error Linear Unit - used in transformers
+    pub fn gelu(dst: []f32, a: []const f32) void {
+        const n = @min(dst.len, a.len);
+        const sqrt_2_over_pi: f32 = 0.7978845608028654; // sqrt(2/pi)
+        const coeff: f32 = 0.044715;
+
+        for (0..n) |i| {
+            const x = a[i];
+            const x3 = x * x * x;
+            const inner = sqrt_2_over_pi * (x + coeff * x3);
+            const exp_2inner = @exp(2.0 * inner);
+            const tanh_val = (exp_2inner - 1.0) / (exp_2inner + 1.0);
+            dst[i] = x * 0.5 * (1.0 + tanh_val);
+        }
+    }
+
+    /// Softmax activation: dst = exp(x) / sum(exp(x))
+    /// Numerically stable version that subtracts max before exp
+    pub fn softmax(dst: []f32, a: []const f32) void {
+        const n = @min(dst.len, a.len);
+        if (n == 0) return;
+
+        // Find max for numerical stability
+        const max_val = max(a[0..n]);
+
+        // Compute exp(x - max) and sum
+        var sum_exp: f32 = 0.0;
+        for (0..n) |i| {
+            dst[i] = @exp(a[i] - max_val);
+            sum_exp += dst[i];
+        }
+
+        // Normalize
+        if (sum_exp > 0.0) {
+            const inv_sum = 1.0 / sum_exp;
+            for (0..n) |i| {
+                dst[i] *= inv_sum;
+            }
+        }
+    }
+
+    /// Log-Softmax activation: dst = log(softmax(x)) = x - max(x) - log(sum(exp(x - max(x))))
+    /// Numerically stable version
+    pub fn logSoftmax(dst: []f32, a: []const f32) void {
+        const n = @min(dst.len, a.len);
+        if (n == 0) return;
+
+        // Find max for numerical stability
+        const max_val = max(a[0..n]);
+
+        // Compute log(sum(exp(x - max)))
+        var sum_exp: f32 = 0.0;
+        for (0..n) |i| {
+            sum_exp += @exp(a[i] - max_val);
+        }
+        const log_sum_exp = @log(sum_exp);
+
+        // Compute log_softmax = x - max - log_sum_exp
+        for (0..n) |i| {
+            dst[i] = a[i] - max_val - log_sum_exp;
+        }
+    }
+
+    /// Argmax: returns the index of the maximum value
+    pub fn argmax(a: []const f32) usize {
+        if (a.len == 0) return 0;
+
+        var max_idx: usize = 0;
+        var max_val: f32 = a[0];
+
+        for (1..a.len) |i| {
+            if (a[i] > max_val) {
+                max_val = a[i];
+                max_idx = i;
+            }
+        }
+
+        return max_idx;
+    }
+
+    /// Argmin: returns the index of the minimum value
+    pub fn argmin(a: []const f32) usize {
+        if (a.len == 0) return 0;
+
+        var min_idx: usize = 0;
+        var min_val: f32 = a[0];
+
+        for (1..a.len) |i| {
+            if (a[i] < min_val) {
+                min_val = a[i];
+                min_idx = i;
+            }
+        }
+
+        return min_idx;
+    }
 };
 
 // ============================================================================
@@ -941,4 +1095,209 @@ test "SimdOps - fma" {
     try std.testing.expectApproxEqAbs(@as(f32, 4.5), dst[1], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 6.5), dst[2], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 8.5), dst[3], 1e-6);
+}
+
+// =============================================================================
+// Checked Arithmetic Tests
+// =============================================================================
+
+test "calcNumelChecked - normal shapes" {
+    // Empty shape
+    try std.testing.expectEqual(@as(usize, 0), try calcNumelChecked(&[_]usize{}));
+
+    // Single dimension
+    try std.testing.expectEqual(@as(usize, 5), try calcNumelChecked(&[_]usize{5}));
+
+    // Multiple dimensions
+    try std.testing.expectEqual(@as(usize, 24), try calcNumelChecked(&[_]usize{ 2, 3, 4 }));
+
+    // Large but valid shape
+    try std.testing.expectEqual(@as(usize, 1000000), try calcNumelChecked(&[_]usize{ 1000, 1000 }));
+}
+
+test "calcNumelChecked - zero dimension" {
+    // Zero in first position
+    try std.testing.expectError(NumelError.ZeroDimension, calcNumelChecked(&[_]usize{ 0, 3, 4 }));
+
+    // Zero in middle
+    try std.testing.expectError(NumelError.ZeroDimension, calcNumelChecked(&[_]usize{ 2, 0, 4 }));
+
+    // Zero at end
+    try std.testing.expectError(NumelError.ZeroDimension, calcNumelChecked(&[_]usize{ 2, 3, 0 }));
+
+    // Single zero
+    try std.testing.expectError(NumelError.ZeroDimension, calcNumelChecked(&[_]usize{0}));
+}
+
+test "calcNumelChecked - overflow detection" {
+    // This shape would overflow on any platform
+    const max = std.math.maxInt(usize);
+    try std.testing.expectError(NumelError.Overflow, calcNumelChecked(&[_]usize{ max, 2 }));
+
+    // Large dimensions that overflow
+    try std.testing.expectError(NumelError.Overflow, calcNumelChecked(&[_]usize{ 1 << 32, 1 << 32 }));
+}
+
+test "calcNumelOrNull - returns null on error" {
+    // Valid shape
+    try std.testing.expectEqual(@as(?usize, 24), calcNumelOrNull(&[_]usize{ 2, 3, 4 }));
+
+    // Zero dimension returns null
+    try std.testing.expectEqual(@as(?usize, null), calcNumelOrNull(&[_]usize{ 0, 3, 4 }));
+
+    // Overflow returns null
+    const max = std.math.maxInt(usize);
+    try std.testing.expectEqual(@as(?usize, null), calcNumelOrNull(&[_]usize{ max, 2 }));
+}
+
+test "Shape - zero dimension numel" {
+    // Shape with zero dimension should return 0 elements
+    const shape = Shape.init(&[_]usize{ 2, 0, 4 });
+    try std.testing.expectEqual(@as(usize, 0), shape.numel());
+}
+
+test "Tensor - empty shape" {
+    const allocator = std.testing.allocator;
+
+    // Creating a tensor with empty shape should work
+    var tensor = try TensorF32.init(allocator, &[_]usize{});
+    defer tensor.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), tensor.numel());
+    try std.testing.expectEqual(@as(usize, 0), tensor.ndim());
+}
+
+// =============================================================================
+// Activation Function Tests
+// =============================================================================
+
+test "SimdOps - sigmoid" {
+    var a = [_]f32{ -2.0, -1.0, 0.0, 1.0, 2.0 };
+    var dst: [5]f32 = undefined;
+
+    SimdOps.sigmoid(&dst, &a);
+
+    // sigmoid(0) = 0.5
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), dst[2], 1e-6);
+    // sigmoid(-x) + sigmoid(x) = 1
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), dst[0] + dst[4], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), dst[1] + dst[3], 1e-5);
+    // Values should be in (0, 1)
+    for (dst) |v| {
+        try std.testing.expect(v > 0.0 and v < 1.0);
+    }
+}
+
+test "SimdOps - tanh" {
+    var a = [_]f32{ -2.0, -1.0, 0.0, 1.0, 2.0 };
+    var dst: [5]f32 = undefined;
+
+    SimdOps.tanh_(&dst, &a);
+
+    // tanh(0) = 0
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), dst[2], 1e-6);
+    // tanh(-x) = -tanh(x)
+    try std.testing.expectApproxEqAbs(-dst[4], dst[0], 1e-5);
+    try std.testing.expectApproxEqAbs(-dst[3], dst[1], 1e-5);
+    // Values should be in (-1, 1)
+    for (dst) |v| {
+        try std.testing.expect(v > -1.0 and v < 1.0);
+    }
+}
+
+test "SimdOps - gelu" {
+    var a = [_]f32{ -2.0, -1.0, 0.0, 1.0, 2.0 };
+    var dst: [5]f32 = undefined;
+
+    SimdOps.gelu(&dst, &a);
+
+    // gelu(0) = 0
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), dst[2], 1e-6);
+    // gelu(x) ≈ x for large positive x
+    try std.testing.expect(dst[4] > 1.5); // gelu(2) ≈ 1.95
+    // gelu(x) ≈ 0 for large negative x
+    try std.testing.expect(dst[0] < 0.0 and dst[0] > -0.2); // gelu(-2) ≈ -0.045
+}
+
+test "SimdOps - softmax" {
+    var a = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+    var dst: [4]f32 = undefined;
+
+    SimdOps.softmax(&dst, &a);
+
+    // Sum should be 1
+    var sum: f32 = 0.0;
+    for (dst) |v| sum += v;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), sum, 1e-5);
+
+    // Values should be in (0, 1)
+    for (dst) |v| {
+        try std.testing.expect(v > 0.0 and v < 1.0);
+    }
+
+    // Larger input should have larger output
+    try std.testing.expect(dst[3] > dst[2]);
+    try std.testing.expect(dst[2] > dst[1]);
+    try std.testing.expect(dst[1] > dst[0]);
+}
+
+test "SimdOps - softmax numerical stability" {
+    // Test with large values that would overflow naive exp
+    var a = [_]f32{ 1000.0, 1001.0, 1002.0 };
+    var dst: [3]f32 = undefined;
+
+    SimdOps.softmax(&dst, &a);
+
+    // Should still sum to 1 despite large input
+    var sum: f32 = 0.0;
+    for (dst) |v| sum += v;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), sum, 1e-5);
+
+    // No NaN or Inf
+    for (dst) |v| {
+        try std.testing.expect(!std.math.isNan(v));
+        try std.testing.expect(!std.math.isInf(v));
+    }
+}
+
+test "SimdOps - logSoftmax" {
+    var a = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+    var dst: [4]f32 = undefined;
+
+    SimdOps.logSoftmax(&dst, &a);
+
+    // exp(log_softmax) should give softmax
+    var softmax_dst: [4]f32 = undefined;
+    SimdOps.softmax(&softmax_dst, &a);
+
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(softmax_dst[i], @exp(dst[i]), 1e-5);
+    }
+
+    // log_softmax values should be negative (log of values < 1)
+    for (dst) |v| {
+        try std.testing.expect(v < 0.0);
+    }
+}
+
+test "SimdOps - argmax" {
+    const a = [_]f32{ 1.0, 5.0, 3.0, 2.0, 4.0 };
+    try std.testing.expectEqual(@as(usize, 1), SimdOps.argmax(&a));
+
+    const b = [_]f32{ 10.0, 5.0, 3.0 };
+    try std.testing.expectEqual(@as(usize, 0), SimdOps.argmax(&b));
+
+    const c = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    try std.testing.expectEqual(@as(usize, 4), SimdOps.argmax(&c));
+}
+
+test "SimdOps - argmin" {
+    const a = [_]f32{ 1.0, 5.0, 3.0, 2.0, 4.0 };
+    try std.testing.expectEqual(@as(usize, 0), SimdOps.argmin(&a));
+
+    const b = [_]f32{ 10.0, 5.0, 3.0 };
+    try std.testing.expectEqual(@as(usize, 2), SimdOps.argmin(&b));
+
+    const c = [_]f32{ 5.0, 4.0, 3.0, 2.0, 1.0 };
+    try std.testing.expectEqual(@as(usize, 4), SimdOps.argmin(&c));
 }

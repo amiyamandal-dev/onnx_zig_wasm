@@ -160,6 +160,7 @@ pub const WordPieceTokenizer = struct {
         errdefer allocator.free(attention_mask);
 
         const token_type_ids = try allocator.alloc(i64, max_length);
+        errdefer allocator.free(token_type_ids);
 
         // Fill arrays
         for (0..max_length) |i| {

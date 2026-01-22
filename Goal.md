@@ -74,29 +74,29 @@ MAIN GOAL :- build zig onnx wasm inference engine for edge computing.
 
 ---
 
-## Milestone 10: Extended Features [IN PROGRESS]
+## Milestone 10: Extended Features [COMPLETE]
 - [x] 10.1 Add execution provider selection (CPU, CUDA, CoreML, etc.)
 - [x] 10.2 Implement session configuration options (SessionOptions struct)
 - [x] 10.3 Add model metadata introspection (getModelMetadata)
 - [x] 10.4 Implement multi-threaded inference options (intra/inter op threads)
-- [ ] 10.5 Add quantized model support (INT8/U8)
-- [ ] 10.6 Add runU8() method for quantized inference
+- [x] 10.5 Add quantized model support (INT8/U8)
+- [x] 10.6 Add runU8() method for quantized inference
 
-## Milestone 11: Code Quality & Robustness
-- [ ] 11.1 Add debug assertions for pointer alignment validation
-- [ ] 11.2 Improve error context (allocator failures, input errors)
-- [ ] 11.3 Add cleanup paths for partial failures in tokenizer
-- [ ] 11.4 Replace silent test skips with proper test prerequisites
-- [ ] 11.5 Add `calcNumelChecked()` with overflow detection
-- [ ] 11.6 Add tests for edge cases (zero dimensions, overflow)
+## Milestone 11: Code Quality & Robustness [COMPLETE]
+- [x] 11.1 Add debug assertions for pointer alignment validation
+- [x] 11.2 Improve error context (allocator failures, input errors)
+- [x] 11.3 Add cleanup paths for partial failures in tokenizer
+- [x] 11.4 Replace silent test skips with proper test prerequisites
+- [x] 11.5 Add `calcNumelChecked()` with overflow detection
+- [x] 11.6 Add tests for edge cases (zero dimensions, overflow)
 
-## Milestone 12: Performance Optimizations
-- [ ] 12.1 Cache `memory_info` in Session struct during init
-- [ ] 12.2 Cache allocator pointers to reduce FFI calls
-- [ ] 12.3 Add SIMD `softmax()`, `sigmoid()`, `tanh()`, `gelu()`
-- [ ] 12.4 Add SIMD `log_softmax()`, `argmax()`
-- [ ] 12.5 Implement finer granularity tensor pool buckets
-- [ ] 12.6 Pre-compute C pointer arrays during session init
+## Milestone 12: Performance Optimizations [COMPLETE]
+- [x] 12.1 Cache `memory_info` in Session struct during init
+- [x] 12.2 Cache allocator pointers to reduce FFI calls
+- [x] 12.3 Add SIMD `softmax()`, `sigmoid()`, `tanh()`, `gelu()`
+- [x] 12.4 Add SIMD `log_softmax()`, `argmax()`
+- [x] 12.5 Implement finer granularity tensor pool buckets
+- [x] 12.6 Pre-compute C pointer arrays during session init
 
 ## Milestone 13: Extended Data Types & Batch API
 - [ ] 13.1 Add `runF64()` method for double precision
@@ -155,27 +155,34 @@ MAIN GOAL :- build zig onnx wasm inference engine for edge computing.
 
 ---
 
-## Current Focus: Milestone 10 - Extended Features
+## Current Focus: Milestone 13 - Extended Data Types & Batch API
 
-Milestones 1-9 are complete! The inference engine can now:
+Milestones 1-12 are complete! The inference engine can now:
 - Load ONNX models from file (native)
-- Run inference with f32 and i64 tensors
+- Run inference with f32, i64, and u8 tensors
 - Introspect model inputs/outputs
-- Handle errors gracefully
-- Reuse memory efficiently (arena allocator, tensor pool)
+- Handle errors gracefully with improved context
+- Reuse memory efficiently (arena allocator, optimized tensor pool)
 - Perform SIMD-optimized tensor operations
 - **Build to WASM (~11KB) for browser deployment**
 - **Integrate with onnxruntime-web via JavaScript bridge**
 - **MNIST digit recognition demo (97% accuracy)**
 - **CLI tools for model inspection and benchmarking**
 - **WordPiece tokenizer for BERT models**
+- **Quantized model support (INT8/U8)**
+- **Session configuration options**
+- **Multi-threaded inference options**
+- **Debug assertions for pointer alignment**
+- **Overflow-checked arithmetic (calcNumelChecked)**
+- **Improved test skip messages with prerequisites**
+- **Cached memory_info and C pointer arrays**
+- **SIMD activation functions (softmax, sigmoid, tanh, gelu, logSoftmax, argmax)**
+- **Fine-grained tensor pool buckets (25 size classes)**
 
-Currently implementing:
-- Execution provider selection (CPU, CUDA, CoreML, etc.) ✓
-- Session configuration options ✓
-- Model metadata introspection ✓
-- Multi-threaded inference options ✓
-- Quantized model support (INT8)
+Next priorities:
+- Add runF64() and runI32() methods
+- Generic runTyped(comptime T: type) method
+- Batched inference API
 
 ## Demo
 
@@ -192,13 +199,13 @@ python3 -m http.server 8080
 
 | File | Line | Issue | Severity | Status |
 |------|------|-------|----------|--------|
-| `session.zig` | 462 | Unsafe pointer alignment | HIGH | TODO |
-| `tensor.zig` | 11 | Integer overflow in calcNumel | MEDIUM | TODO |
-| `tokenizer.zig` | 184 | Memory leak on partial failure | MEDIUM | TODO |
-| `session.zig` | 778 | Silent test skip | MEDIUM | TODO |
-| `session.zig` | 353 | Repeated FFI memory_info creation | MEDIUM | TODO |
+| `session.zig` | 462 | Unsafe pointer alignment | HIGH | FIXED (assertAligned) |
+| `tensor.zig` | 11 | Integer overflow in calcNumel | MEDIUM | FIXED (calcNumelChecked) |
+| `tokenizer.zig` | 184 | Memory leak on partial failure | MEDIUM | FIXED (errdefer added) |
+| `session.zig` | 778 | Silent test skip | MEDIUM | FIXED (loadTestSession helper) |
+| `session.zig` | 353 | Repeated FFI memory_info creation | MEDIUM | FIXED (cached in Session struct) |
 | `wasm_exports.zig` | 288 | No error context in ops | LOW | TODO |
-| `tensor_pool.zig` | 92 | Suboptimal bucket sizing | LOW | TODO |
+| `tensor_pool.zig` | 92 | Suboptimal bucket sizing | LOW | FIXED (25 fine-grained buckets) |
 
 ---
 

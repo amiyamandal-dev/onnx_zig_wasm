@@ -126,6 +126,57 @@ def create_matmul_model():
     return model
 
 
+def create_identity_u8_model():
+    """Create an identity model with UINT8 data type: Y = X (for quantized model testing)"""
+    X = helper.make_tensor_value_info('X', TensorProto.UINT8, [1, 8])
+    Y = helper.make_tensor_value_info('Y', TensorProto.UINT8, [1, 8])
+
+    identity_node = helper.make_node(
+        'Identity',
+        inputs=['X'],
+        outputs=['Y'],
+        name='identity_u8_node'
+    )
+
+    graph = helper.make_graph(
+        [identity_node],
+        'identity_u8_graph',
+        [X],
+        [Y]
+    )
+
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 13)])
+    model.ir_version = 8
+
+    return model
+
+
+def create_add_u8_model():
+    """Create an add model with UINT8 data type: C = A + B (for quantized model testing)"""
+    A = helper.make_tensor_value_info('A', TensorProto.UINT8, [2, 4])
+    B = helper.make_tensor_value_info('B', TensorProto.UINT8, [2, 4])
+    C = helper.make_tensor_value_info('C', TensorProto.UINT8, [2, 4])
+
+    add_node = helper.make_node(
+        'Add',
+        inputs=['A', 'B'],
+        outputs=['C'],
+        name='add_u8_node'
+    )
+
+    graph = helper.make_graph(
+        [add_node],
+        'add_u8_graph',
+        [A, B],
+        [C]
+    )
+
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 13)])
+    model.ir_version = 8
+
+    return model
+
+
 def main():
     import os
 
@@ -139,6 +190,8 @@ def main():
         ('identity.onnx', create_identity_model()),
         ('relu.onnx', create_relu_model()),
         ('matmul.onnx', create_matmul_model()),
+        ('identity_u8.onnx', create_identity_u8_model()),
+        ('add_u8.onnx', create_add_u8_model()),
     ]
 
     for filename, model in models:
@@ -149,10 +202,12 @@ def main():
 
     print("\nTest models generated successfully!")
     print("\nExpected test values:")
-    print("- add.onnx: C = A + B where A, B are [2,3] tensors")
-    print("- identity.onnx: Y = X where X is [1,4] tensor")
-    print("- relu.onnx: Y = max(0, X) where X is [1,8] tensor")
-    print("- matmul.onnx: Y = A @ B where A is [2,3], B is [3,4]")
+    print("- add.onnx: C = A + B where A, B are [2,3] f32 tensors")
+    print("- identity.onnx: Y = X where X is [1,4] f32 tensor")
+    print("- relu.onnx: Y = max(0, X) where X is [1,8] f32 tensor")
+    print("- matmul.onnx: Y = A @ B where A is [2,3], B is [3,4] f32 tensors")
+    print("- identity_u8.onnx: Y = X where X is [1,8] u8 tensor (quantized)")
+    print("- add_u8.onnx: C = A + B where A, B are [2,4] u8 tensors (quantized)")
 
 
 if __name__ == '__main__':

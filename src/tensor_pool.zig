@@ -25,11 +25,41 @@ const Tensor = tensor_mod.Tensor;
 const MAX_DIMS = tensor_mod.MAX_DIMS;
 const calcNumel = tensor_mod.calcNumel;
 
-/// Size bucket for tensor pooling.
-/// Tensors are grouped by total element count (rounded to power of 2).
-const SizeBucket = struct {
-    min_elements: usize,
-    max_elements: usize,
+/// Size bucket thresholds for finer-grained tensor pooling.
+/// Uses smaller increments for small tensors (where waste is most significant)
+/// and larger increments for big tensors (where percentage waste is lower).
+///
+/// Bucket layout:
+/// - Buckets 0-7: Fine granularity (16, 32, 48, 64, 96, 128, 192, 256)
+/// - Buckets 8-15: Medium granularity (384, 512, 768, 1K, 1.5K, 2K, 3K, 4K)
+/// - Buckets 16-23: Power-of-2 (8K, 16K, 32K, 64K, 128K, 256K, 512K, 1M)
+/// - Bucket 24: Overflow (>1M elements)
+const BUCKET_THRESHOLDS = [_]usize{
+    16, // 0: 1-16
+    32, // 1: 17-32
+    48, // 2: 33-48
+    64, // 3: 49-64
+    96, // 4: 65-96
+    128, // 5: 97-128
+    192, // 6: 129-192
+    256, // 7: 193-256
+    384, // 8: 257-384
+    512, // 9: 385-512
+    768, // 10: 513-768
+    1024, // 11: 769-1024 (1K)
+    1536, // 12: 1025-1536 (1.5K)
+    2048, // 13: 1537-2048 (2K)
+    3072, // 14: 2049-3072 (3K)
+    4096, // 15: 3073-4096 (4K)
+    8192, // 16: 4097-8192 (8K)
+    16384, // 17: 8193-16384 (16K)
+    32768, // 18: 16385-32768 (32K)
+    65536, // 19: 32769-65536 (64K)
+    131072, // 20: 65537-131072 (128K)
+    262144, // 21: 131073-262144 (256K)
+    524288, // 22: 262145-524288 (512K)
+    1048576, // 23: 524289-1048576 (1M)
+    // 24+: >1M elements (overflow bucket)
 };
 
 /// Tensor pool for efficient intermediate tensor management.
@@ -38,8 +68,8 @@ pub fn TensorPool(comptime T: type) type {
         const Self = @This();
         const TensorT = Tensor(T);
 
-        const NUM_BUCKETS = 16; // Supports sizes from 1 to ~32M elements
-        const MIN_BUCKET_SIZE = 16;
+        const NUM_BUCKETS = BUCKET_THRESHOLDS.len + 1; // +1 for overflow bucket
+        const MIN_BUCKET_SIZE = BUCKET_THRESHOLDS[0];
 
         /// Entry in the free list
         const PoolEntry = struct {
@@ -88,20 +118,31 @@ pub fn TensorPool(comptime T: type) type {
             self.active_tensors = 0;
         }
 
-        /// Get bucket index for element count
+        /// Get bucket index for element count using threshold array
         pub fn getBucketIndex(num_elements: usize) usize {
-            if (num_elements <= MIN_BUCKET_SIZE) return 0;
-            // Find the highest bit position
-            const effective = @max(num_elements, 1);
-            const bits = @bitSizeOf(usize) - @clz(effective - 1);
-            const min_bits = @bitSizeOf(usize) - @clz(@as(usize, MIN_BUCKET_SIZE - 1));
-            const idx = if (bits > min_bits) bits - min_bits else 0;
-            return @min(idx, NUM_BUCKETS - 1);
+            // Binary search through thresholds
+            for (BUCKET_THRESHOLDS, 0..) |threshold, i| {
+                if (num_elements <= threshold) {
+                    return i;
+                }
+            }
+            // Overflow bucket for very large tensors
+            return NUM_BUCKETS - 1;
         }
 
-        /// Get minimum element count for bucket
+        /// Get minimum element count for bucket (max size of previous bucket + 1)
         fn getBucketMinSize(idx: usize) usize {
-            return @as(usize, MIN_BUCKET_SIZE) << @as(u6, @intCast(idx));
+            if (idx == 0) return 1;
+            if (idx > BUCKET_THRESHOLDS.len) return BUCKET_THRESHOLDS[BUCKET_THRESHOLDS.len - 1] + 1;
+            return BUCKET_THRESHOLDS[idx - 1] + 1;
+        }
+
+        /// Get maximum element count for bucket
+        fn getBucketMaxSize(idx: usize) usize {
+            if (idx >= BUCKET_THRESHOLDS.len) {
+                return std.math.maxInt(usize);
+            }
+            return BUCKET_THRESHOLDS[idx];
         }
 
         /// Acquire a tensor with at least the required shape.
@@ -338,10 +379,44 @@ test "TensorPool - trim" {
 }
 
 test "TensorPool - bucket sizing" {
-    // Test bucket index calculation
+    // Test bucket index calculation with fine-grained buckets
+    // Bucket 0: 1-16
     try std.testing.expectEqual(@as(usize, 0), TensorPoolF32.getBucketIndex(1));
     try std.testing.expectEqual(@as(usize, 0), TensorPoolF32.getBucketIndex(16));
+
+    // Bucket 1: 17-32
     try std.testing.expectEqual(@as(usize, 1), TensorPoolF32.getBucketIndex(17));
     try std.testing.expectEqual(@as(usize, 1), TensorPoolF32.getBucketIndex(32));
+
+    // Bucket 2: 33-48
     try std.testing.expectEqual(@as(usize, 2), TensorPoolF32.getBucketIndex(33));
+    try std.testing.expectEqual(@as(usize, 2), TensorPoolF32.getBucketIndex(48));
+
+    // Bucket 3: 49-64
+    try std.testing.expectEqual(@as(usize, 3), TensorPoolF32.getBucketIndex(49));
+    try std.testing.expectEqual(@as(usize, 3), TensorPoolF32.getBucketIndex(64));
+
+    // Larger sizes (power-of-2 region)
+    try std.testing.expectEqual(@as(usize, 11), TensorPoolF32.getBucketIndex(1024));
+    try std.testing.expectEqual(@as(usize, 16), TensorPoolF32.getBucketIndex(8192));
+
+    // Overflow bucket for very large tensors
+    try std.testing.expectEqual(@as(usize, 24), TensorPoolF32.getBucketIndex(2_000_000));
+}
+
+test "TensorPool - fine-grained reuse" {
+    var pool = TensorPoolF32.init(std.testing.allocator);
+    defer pool.deinit();
+
+    // Acquire a 40-element tensor (bucket 2: 33-48)
+    const t1 = try pool.acquire(&[_]usize{ 8, 5 }); // 40 elements
+    pool.release(t1);
+
+    // Request 35 elements - should reuse the 40-element tensor from bucket 2
+    const t2 = try pool.acquire(&[_]usize{ 7, 5 }); // 35 elements
+    defer pool.release(t2);
+
+    // Should have hit the pool
+    const stats = pool.getStats();
+    try std.testing.expectEqual(@as(usize, 1), stats.hit_count);
 }
