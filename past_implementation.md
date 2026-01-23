@@ -650,6 +650,139 @@ zig build test -Donnxruntime_path=/path/to/onnxruntime
 
 ---
 
+### Session 11 (2026-01-22)
+- **Completed Milestone 13: Extended Data Types & Batch API**
+
+**Extended Data Types (13.1, 13.2, 13.3):**
+- Added `runF64()` method for double precision (f64) tensors
+- Added `runI32()` method for 32-bit integer tensors
+- Added `runI32ToI32()` method for i32 input -> i32 output
+- Added `freeF64Outputs()` and `freeI32Outputs()` methods
+- Internal `runTypedImpl()` generic method for code reuse across data types
+
+**Batch Inference API (13.4, 13.5, 13.6):**
+- Added `BatchOptions` struct:
+  - `unbatch_outputs: bool` - Split batched outputs back to individual samples
+  - `pad_value: f32` - Padding value for variable-length inputs (default 0.0)
+  - `max_batch_size: usize` - Maximum batch size limit (0 = unlimited)
+- Added `runF32Batch()` method:
+  - Takes array of samples and per-sample shape
+  - Automatically concatenates into batched tensor
+  - Optional unbatching of outputs back to individual tensors
+- Added `runF32BatchClassify()` method:
+  - Batched inference with argmax for classification tasks
+  - Returns array of predicted class indices
+
+**Test Models Created:**
+- `models/test/identity_f64.onnx` - Identity with DOUBLE data type
+- `models/test/identity_i32.onnx` - Identity with INT32 data type
+- `models/test/identity_batch.onnx` - Identity with dynamic batch dimension [batch, 4]
+
+**Tests Added (6 new tests):**
+- `Session - identity_f64 model inference` - f64 tensor inference
+- `Session - identity_i32 model inference` - i32 tensor inference
+- `Session - i32 to i32 inference` - runI32ToI32() method
+- `Session - f64 tensor introspection` - f64 model metadata
+- `Session - batch inference with identity model` - runF32Batch with unbatching
+- `Session - batch inference without unbatching` - Batched output preservation
+
+**Build Status:**
+- All 69 tests passing
+
+---
+
+### Session 12 (2026-01-22)
+- **Completed Milestone 14: API Ergonomics**
+
+**Shape Conversion Utilities (14.1):**
+- Added `shapeI64ToUsize()` - Convert ONNX i64 shapes to Zig usize
+- Added `shapeI64ToUsizeSlice()` - Slice-based conversion
+- Added `shapeUsizeToI64()` - Convert Zig usize shapes to ONNX i64
+- Added `shapeUsizeToI64Slice()` - Slice-based conversion
+- Added `shapeNumel()` - Calculate element count from i64 shape
+
+**Simplified Inference Methods (14.2, 14.3):**
+- Added `runF32Simple()` - Single-input inference with data and shape
+- Added `runTensor()` - Accept TensorF32 directly (auto shape conversion)
+- Added `runTensors()` - Accept multiple TensorF32 inputs
+
+**Named Tensor API (14.4):**
+- Added `NamedInput` struct for name/data/shape tuples
+- Added `runNamed()` - Specify inputs by name rather than index
+- Added `runWithMap()` - Use StringHashMap for input specification
+
+**Index Helpers (14.5):**
+- Added `getInputIndex()` - Get input index by name
+- Added `getOutputIndex()` - Get output index by name
+- Added `hasInput()` - Check if input name exists
+- Added `hasOutput()` - Check if output name exists
+
+**Tensor Operations (14.6):**
+- Added `matmul()` - Matrix multiplication: C = A @ B
+- Added `transpose()` - Transpose 2D tensor: [M,N] -> [N,M]
+- Added `concat()` - Concatenate tensors along axis 0
+- Added `sliceAxis0()` - Slice tensor along axis 0
+- Added `pad()` - Pad tensor with constant value along axis 0
+
+**Tests Added (14 new tests):**
+- Shape conversion tests (4 tests)
+- runF32Simple test
+- runTensor test
+- getInputIndex/getOutputIndex test
+- runNamed test
+- matmul test
+- transpose test
+- concat test
+- sliceAxis0 test
+- pad test
+
+**Build Status:**
+- All 83 tests passing
+
+---
+
+### Session 13 (2026-01-22)
+- **Milestone 15: Platform Support (Partial)**
+
+**C ABI Exports (15.1):**
+- Created `include/onnx_zig.h` - C header for FFI integration
+- Created `src/c_exports.zig` - C ABI function implementations
+- Added error codes enum (OnnxZigError)
+- Session, Tensor, and utility function exports
+- Added `c-lib` and `static-lib` build targets to build.zig
+
+**Swift Bindings (15.2):**
+- Created `swift/OnnxZig.swift` - Swift wrapper classes
+- `OnnxZigSession` class for model loading and inference
+- `OnnxZigTensor` class with data access, softmax, argmax
+- Automatic reference counting with proper cleanup
+- C function declarations via `@_silgen_name`
+
+**Node.js N-API Wrapper (15.5):**
+- Created `node/` directory with full Node.js addon
+- `node/src/addon.cc` - N-API C++ implementation
+- `TensorWrapper` and `SessionWrapper` N-API classes
+- `node/index.js` - High-level JavaScript API
+- `node/index.d.ts` - TypeScript type definitions
+- `node/binding.gyp` - node-gyp build configuration
+- `node/package.json` - npm package configuration
+
+**WASM Dynamic Tensor Handles (15.6):**
+- Replaced fixed 256-slot array with dynamic pool
+- Initial pool size: 64, max: 4096
+- Auto-growing pool when capacity reached
+- Reference counting for tensor handles
+- Statistics tracking (allocations, frees, peak, current)
+- Error codes via `wasm_get_last_error()`
+- New exports: `wasm_tensor_count()`, `wasm_tensor_peak()`, `wasm_tensor_capacity()`
+- `tensor_retain()`, `tensor_release()` for reference management
+
+**Build Status:**
+- All 83 tests passing
+- WASM build: ~11KB
+
+---
+
 ## Completed Milestones
 
 - **Milestone 1**: Tensor Foundation ✓
@@ -664,3 +797,6 @@ zig build test -Donnxruntime_path=/path/to/onnxruntime
 - **Milestone 10**: Extended Features ✓
 - **Milestone 11**: Code Quality & Robustness ✓
 - **Milestone 12**: Performance Optimizations ✓
+- **Milestone 13**: Extended Data Types & Batch API ✓
+- **Milestone 14**: API Ergonomics ✓
+- **Milestone 15**: Platform Support (In Progress)

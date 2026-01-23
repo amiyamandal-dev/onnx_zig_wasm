@@ -427,6 +427,157 @@ pub const TensorI64 = Tensor(i64);
 pub const TensorU8 = Tensor(u8);
 
 // =============================================================================
+// Tensor Operations
+// =============================================================================
+
+/// Matrix multiplication: C = A @ B
+/// A must be [M, K], B must be [K, N], result is [M, N]
+pub fn matmul(allocator: std.mem.Allocator, a: *const TensorF32, b: *const TensorF32) !TensorF32 {
+    if (a.shape.ndim != 2 or b.shape.ndim != 2) {
+        return error.DimensionMismatch;
+    }
+
+    const m = a.shape.dims[0];
+    const k = a.shape.dims[1];
+    const k2 = b.shape.dims[0];
+    const n = b.shape.dims[1];
+
+    if (k != k2) return error.DimensionMismatch;
+
+    var result = try TensorF32.init(allocator, &[_]usize{ m, n });
+    errdefer result.deinit();
+
+    // Simple matrix multiplication (could be optimized with SIMD/blocking)
+    for (0..m) |i| {
+        for (0..n) |j| {
+            var sum: f32 = 0.0;
+            for (0..k) |l| {
+                sum += a.data[i * k + l] * b.data[l * n + j];
+            }
+            result.data[i * n + j] = sum;
+        }
+    }
+
+    return result;
+}
+
+/// Transpose a 2D tensor: [M, N] -> [N, M]
+pub fn transpose(allocator: std.mem.Allocator, t: *const TensorF32) !TensorF32 {
+    if (t.shape.ndim != 2) {
+        return error.DimensionMismatch;
+    }
+
+    const m = t.shape.dims[0];
+    const n = t.shape.dims[1];
+
+    var result = try TensorF32.init(allocator, &[_]usize{ n, m });
+    errdefer result.deinit();
+
+    for (0..m) |i| {
+        for (0..n) |j| {
+            result.data[j * m + i] = t.data[i * n + j];
+        }
+    }
+
+    return result;
+}
+
+/// Concatenate two tensors along axis 0.
+/// Both tensors must have the same shape except for axis 0.
+pub fn concat(allocator: std.mem.Allocator, a: *const TensorF32, b: *const TensorF32) !TensorF32 {
+    if (a.shape.ndim != b.shape.ndim) return error.DimensionMismatch;
+    if (a.shape.ndim == 0) return error.DimensionMismatch;
+
+    // Check all dims except axis 0 match
+    for (1..a.shape.ndim) |i| {
+        if (a.shape.dims[i] != b.shape.dims[i]) {
+            return error.DimensionMismatch;
+        }
+    }
+
+    // Create result shape
+    var new_shape: [MAX_DIMS]usize = [_]usize{0} ** MAX_DIMS;
+    new_shape[0] = a.shape.dims[0] + b.shape.dims[0];
+    for (1..a.shape.ndim) |i| {
+        new_shape[i] = a.shape.dims[i];
+    }
+
+    var result = try TensorF32.init(allocator, new_shape[0..a.shape.ndim]);
+    errdefer result.deinit();
+
+    // Copy data
+    @memcpy(result.data[0..a.numel()], a.data);
+    @memcpy(result.data[a.numel()..], b.data);
+
+    return result;
+}
+
+/// Slice a tensor along axis 0: t[start:end]
+pub fn sliceAxis0(allocator: std.mem.Allocator, t: *const TensorF32, start: usize, end: usize) !TensorF32 {
+    if (t.shape.ndim == 0) return error.DimensionMismatch;
+    if (start >= end or end > t.shape.dims[0]) return error.OutOfBounds;
+
+    const slice_size = end - start;
+
+    // Create result shape
+    var new_shape: [MAX_DIMS]usize = [_]usize{0} ** MAX_DIMS;
+    new_shape[0] = slice_size;
+    for (1..t.shape.ndim) |i| {
+        new_shape[i] = t.shape.dims[i];
+    }
+
+    var result = try TensorF32.init(allocator, new_shape[0..t.shape.ndim]);
+    errdefer result.deinit();
+
+    // Calculate elements per slice along axis 0
+    var stride: usize = 1;
+    for (1..t.shape.ndim) |i| {
+        stride *= t.shape.dims[i];
+    }
+
+    const src_offset = start * stride;
+    const copy_len = slice_size * stride;
+    @memcpy(result.data[0..copy_len], t.data[src_offset..][0..copy_len]);
+
+    return result;
+}
+
+/// Pad a tensor with a constant value along axis 0.
+/// Adds `pad_before` elements before and `pad_after` elements after.
+pub fn pad(allocator: std.mem.Allocator, t: *const TensorF32, pad_before: usize, pad_after: usize, value: f32) !TensorF32 {
+    if (t.shape.ndim == 0) return error.DimensionMismatch;
+
+    // Create result shape
+    var new_shape: [MAX_DIMS]usize = [_]usize{0} ** MAX_DIMS;
+    new_shape[0] = t.shape.dims[0] + pad_before + pad_after;
+    for (1..t.shape.ndim) |i| {
+        new_shape[i] = t.shape.dims[i];
+    }
+
+    var result = try TensorF32.init(allocator, new_shape[0..t.shape.ndim]);
+    errdefer result.deinit();
+
+    // Calculate elements per slice along axis 0
+    var stride: usize = 1;
+    for (1..t.shape.ndim) |i| {
+        stride *= t.shape.dims[i];
+    }
+
+    // Fill padding before
+    const before_len = pad_before * stride;
+    @memset(result.data[0..before_len], value);
+
+    // Copy original data
+    @memcpy(result.data[before_len..][0..t.numel()], t.data);
+
+    // Fill padding after
+    const after_start = before_len + t.numel();
+    @memset(result.data[after_start..], value);
+
+    return result;
+}
+
+// =============================================================================
 // SIMD-optimized Operations
 // =============================================================================
 
@@ -1300,4 +1451,141 @@ test "SimdOps - argmin" {
 
     const c = [_]f32{ 5.0, 4.0, 3.0, 2.0, 1.0 };
     try std.testing.expectEqual(@as(usize, 4), SimdOps.argmin(&c));
+}
+
+test "matmul - 2x3 @ 3x2" {
+    const allocator = std.testing.allocator;
+
+    // A = [[1, 2, 3], [4, 5, 6]]  (2x3)
+    var a = try TensorF32.init(allocator, &[_]usize{ 2, 3 });
+    defer a.deinit();
+    a.data[0] = 1;
+    a.data[1] = 2;
+    a.data[2] = 3;
+    a.data[3] = 4;
+    a.data[4] = 5;
+    a.data[5] = 6;
+
+    // B = [[7, 8], [9, 10], [11, 12]]  (3x2)
+    var b = try TensorF32.init(allocator, &[_]usize{ 3, 2 });
+    defer b.deinit();
+    b.data[0] = 7;
+    b.data[1] = 8;
+    b.data[2] = 9;
+    b.data[3] = 10;
+    b.data[4] = 11;
+    b.data[5] = 12;
+
+    // C = A @ B should be [[58, 64], [139, 154]]  (2x2)
+    var c = try matmul(allocator, &a, &b);
+    defer c.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), c.shape.dims[0]);
+    try std.testing.expectEqual(@as(usize, 2), c.shape.dims[1]);
+    try std.testing.expectApproxEqAbs(@as(f32, 58.0), c.data[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 64.0), c.data[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 139.0), c.data[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 154.0), c.data[3], 1e-6);
+}
+
+test "transpose - 2x3 -> 3x2" {
+    const allocator = std.testing.allocator;
+
+    // A = [[1, 2, 3], [4, 5, 6]]  (2x3)
+    var a = try TensorF32.init(allocator, &[_]usize{ 2, 3 });
+    defer a.deinit();
+    for (0..6) |i| {
+        a.data[i] = @floatFromInt(i + 1);
+    }
+
+    // B = A^T should be [[1, 4], [2, 5], [3, 6]]  (3x2)
+    var b = try transpose(allocator, &a);
+    defer b.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), b.shape.dims[0]);
+    try std.testing.expectEqual(@as(usize, 2), b.shape.dims[1]);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), b.data[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), b.data[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), b.data[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), b.data[3], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), b.data[4], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 6.0), b.data[5], 1e-6);
+}
+
+test "concat - along axis 0" {
+    const allocator = std.testing.allocator;
+
+    // A = [[1, 2], [3, 4]]  (2x2)
+    var a = try TensorF32.init(allocator, &[_]usize{ 2, 2 });
+    defer a.deinit();
+    a.data[0] = 1;
+    a.data[1] = 2;
+    a.data[2] = 3;
+    a.data[3] = 4;
+
+    // B = [[5, 6]]  (1x2)
+    var b = try TensorF32.init(allocator, &[_]usize{ 1, 2 });
+    defer b.deinit();
+    b.data[0] = 5;
+    b.data[1] = 6;
+
+    // C = concat(A, B) should be [[1, 2], [3, 4], [5, 6]]  (3x2)
+    var c = try concat(allocator, &a, &b);
+    defer c.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), c.shape.dims[0]);
+    try std.testing.expectEqual(@as(usize, 2), c.shape.dims[1]);
+    try std.testing.expectEqual(@as(usize, 6), c.numel());
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), c.data[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 6.0), c.data[5], 1e-6);
+}
+
+test "sliceAxis0 - extract rows" {
+    const allocator = std.testing.allocator;
+
+    // A = [[1, 2], [3, 4], [5, 6]]  (3x2)
+    var a = try TensorF32.init(allocator, &[_]usize{ 3, 2 });
+    defer a.deinit();
+    for (0..6) |i| {
+        a.data[i] = @floatFromInt(i + 1);
+    }
+
+    // B = A[1:3] should be [[3, 4], [5, 6]]  (2x2)
+    var b = try sliceAxis0(allocator, &a, 1, 3);
+    defer b.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), b.shape.dims[0]);
+    try std.testing.expectEqual(@as(usize, 2), b.shape.dims[1]);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), b.data[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), b.data[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 5.0), b.data[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 6.0), b.data[3], 1e-6);
+}
+
+test "pad - add padding" {
+    const allocator = std.testing.allocator;
+
+    // A = [[1, 2], [3, 4]]  (2x2)
+    var a = try TensorF32.init(allocator, &[_]usize{ 2, 2 });
+    defer a.deinit();
+    a.data[0] = 1;
+    a.data[1] = 2;
+    a.data[2] = 3;
+    a.data[3] = 4;
+
+    // B = pad(A, 1, 1, 0) should be [[0, 0], [1, 2], [3, 4], [0, 0]]  (4x2)
+    var b = try pad(allocator, &a, 1, 1, 0.0);
+    defer b.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), b.shape.dims[0]);
+    try std.testing.expectEqual(@as(usize, 2), b.shape.dims[1]);
+    try std.testing.expectEqual(@as(usize, 8), b.numel());
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), b.data[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), b.data[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), b.data[2], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), b.data[3], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), b.data[4], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 4.0), b.data[5], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), b.data[6], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), b.data[7], 1e-6);
 }

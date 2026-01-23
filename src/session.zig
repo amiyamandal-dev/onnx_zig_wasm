@@ -61,6 +61,9 @@ const tensor_pool_mod = @import("tensor_pool.zig");
 const Shape = tensor_mod.Shape;
 const Tensor = tensor_mod.Tensor;
 const TensorF32 = tensor_mod.TensorF32;
+const TensorF64 = tensor_mod.TensorF64;
+const TensorI32 = tensor_mod.TensorI32;
+const TensorI64 = tensor_mod.TensorI64;
 const TensorU8 = tensor_mod.TensorU8;
 const MAX_DIMS = tensor_mod.MAX_DIMS;
 const ScratchAllocator = arena_mod.ScratchAllocator;
@@ -340,6 +343,90 @@ pub const NamedTensor = struct {
 };
 
 // =============================================================================
+// Batch Options
+// =============================================================================
+
+/// Options for batched inference
+pub const BatchOptions = struct {
+    /// Whether to split batched outputs back into individual samples
+    /// If true, returns one output tensor per input sample
+    /// If false, returns a single batched output tensor
+    unbatch_outputs: bool = true,
+
+    /// Padding value for dynamic batch sizes (not yet implemented)
+    pad_value: f32 = 0.0,
+
+    /// Maximum batch size to process at once (0 = no limit)
+    /// Larger batches may be split into chunks
+    max_batch_size: usize = 0,
+};
+
+// =============================================================================
+// Shape Conversion Utilities
+// =============================================================================
+
+/// Convert an i64 shape (ONNX format) to usize shape (Zig format).
+/// Returns null if any dimension is negative (dynamic dimension).
+pub fn shapeI64ToUsize(i64_shape: []const i64) ?[MAX_DIMS]usize {
+    var result: [MAX_DIMS]usize = [_]usize{0} ** MAX_DIMS;
+    if (i64_shape.len > MAX_DIMS) return null;
+
+    for (i64_shape, 0..) |dim, i| {
+        if (dim < 0) return null; // Dynamic dimension
+        result[i] = @intCast(dim);
+    }
+    return result;
+}
+
+/// Convert an i64 shape slice to usize slice, storing in provided buffer.
+/// Returns the slice of the buffer that was filled.
+/// Returns null if any dimension is negative.
+pub fn shapeI64ToUsizeSlice(i64_shape: []const i64, buffer: []usize) ?[]usize {
+    if (i64_shape.len > buffer.len) return null;
+
+    for (i64_shape, 0..) |dim, i| {
+        if (dim < 0) return null;
+        buffer[i] = @intCast(dim);
+    }
+    return buffer[0..i64_shape.len];
+}
+
+/// Convert a usize shape (Zig format) to i64 shape (ONNX format).
+pub fn shapeUsizeToI64(usize_shape: []const usize) [MAX_DIMS]i64 {
+    var result: [MAX_DIMS]i64 = [_]i64{0} ** MAX_DIMS;
+    const len = @min(usize_shape.len, MAX_DIMS);
+
+    for (usize_shape[0..len], 0..) |dim, i| {
+        result[i] = @intCast(dim);
+    }
+    return result;
+}
+
+/// Convert a usize shape slice to i64 slice, storing in provided buffer.
+/// Returns the slice of the buffer that was filled.
+pub fn shapeUsizeToI64Slice(usize_shape: []const usize, buffer: []i64) ?[]i64 {
+    if (usize_shape.len > buffer.len) return null;
+
+    for (usize_shape, 0..) |dim, i| {
+        buffer[i] = @intCast(dim);
+    }
+    return buffer[0..usize_shape.len];
+}
+
+/// Calculate the total number of elements from an i64 shape.
+/// Returns null if shape contains negative (dynamic) dimensions.
+pub fn shapeNumel(shape: []const i64) ?usize {
+    if (shape.len == 0) return 0;
+
+    var total: usize = 1;
+    for (shape) |dim| {
+        if (dim < 0) return null;
+        total *= @intCast(dim);
+    }
+    return total;
+}
+
+// =============================================================================
 // Session
 // =============================================================================
 
@@ -551,6 +638,38 @@ pub const Session = struct {
         defer self.api.ReleaseTypeInfo.?(type_info.?);
 
         return self.extractTensorInfo(type_info.?, self.output_names[index]);
+    }
+
+    /// Get the index of an input tensor by name.
+    /// Returns null if no input with the given name exists.
+    pub fn getInputIndex(self: *const Self, name: []const u8) ?usize {
+        for (self.input_names, 0..) |input_name, i| {
+            if (std.mem.eql(u8, input_name, name)) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    /// Get the index of an output tensor by name.
+    /// Returns null if no output with the given name exists.
+    pub fn getOutputIndex(self: *const Self, name: []const u8) ?usize {
+        for (self.output_names, 0..) |output_name, i| {
+            if (std.mem.eql(u8, output_name, name)) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    /// Check if an input with the given name exists
+    pub fn hasInput(self: *const Self, name: []const u8) bool {
+        return self.getInputIndex(name) != null;
+    }
+
+    /// Check if an output with the given name exists
+    pub fn hasOutput(self: *const Self, name: []const u8) bool {
+        return self.getOutputIndex(name) != null;
     }
 
     /// Get model metadata (producer, version, description, custom properties)
@@ -835,6 +954,52 @@ pub const Session = struct {
         return result_tensors;
     }
 
+    /// Run inference with a single f32 input tensor.
+    /// Convenience method for models with exactly one input.
+    /// Returns allocated output tensors (caller must free).
+    pub fn runF32Simple(self: *Self, input: []const f32, shape: []const i64) ![]TensorF32 {
+        if (self.input_count != 1) return SessionError.InvalidInputCount;
+        return self.runF32(&[_][]const f32{input}, &[_][]const i64{shape});
+    }
+
+    /// Run inference accepting TensorF32 directly.
+    /// The tensor's shape is automatically converted to ONNX format.
+    /// For single-input models.
+    pub fn runTensor(self: *Self, input: *const TensorF32) ![]TensorF32 {
+        if (self.input_count != 1) return SessionError.InvalidInputCount;
+
+        // Convert usize shape to i64
+        var i64_shape: [MAX_DIMS]i64 = undefined;
+        for (0..input.shape.ndim) |i| {
+            i64_shape[i] = @intCast(input.shape.dims[i]);
+        }
+
+        return self.runF32(&[_][]const f32{input.data}, &[_][]const i64{i64_shape[0..input.shape.ndim]});
+    }
+
+    /// Run inference with multiple TensorF32 inputs.
+    /// Each tensor's shape is automatically converted to ONNX format.
+    pub fn runTensors(self: *Self, inputs: []const *const TensorF32) ![]TensorF32 {
+        if (inputs.len != self.input_count) return SessionError.InvalidInputCount;
+
+        // Convert tensors to slices and shapes
+        var data_slices: [16][]const f32 = undefined;
+        var i64_shapes: [16][MAX_DIMS]i64 = undefined;
+        var shape_slices: [16][]const i64 = undefined;
+
+        if (inputs.len > 16) return SessionError.InvalidInputCount;
+
+        for (inputs, 0..) |tensor, i| {
+            data_slices[i] = tensor.data;
+            for (0..tensor.shape.ndim) |j| {
+                i64_shapes[i][j] = @intCast(tensor.shape.dims[j]);
+            }
+            shape_slices[i] = i64_shapes[i][0..tensor.shape.ndim];
+        }
+
+        return self.runF32(data_slices[0..inputs.len], shape_slices[0..inputs.len]);
+    }
+
     /// Run inference with int64 inputs (e.g., for BERT token IDs)
     /// Returns f32 output tensors (common for embedding models)
     pub fn runI64(
@@ -1065,6 +1230,372 @@ pub const Session = struct {
             t.deinit();
         }
         self.allocator.free(outputs);
+    }
+
+    /// Run inference with f64 (double precision) tensors
+    /// input_data: slice of input tensor data (must match model input count and shapes)
+    /// input_shapes: shapes for each input tensor
+    /// Returns allocated output tensors (caller must free with freeF64Outputs)
+    pub fn runF64(
+        self: *Self,
+        input_data: []const []const f64,
+        input_shapes: []const []const i64,
+    ) ![]TensorF64 {
+        return self.runTypedImpl(f64, f64, input_data, input_shapes);
+    }
+
+    /// Free f64 output tensors returned by runF64
+    pub fn freeF64Outputs(self: *Self, outputs: []TensorF64) void {
+        for (outputs) |*t| {
+            t.deinit();
+        }
+        self.allocator.free(outputs);
+    }
+
+    /// Run inference with i32 (32-bit integer) inputs
+    /// Returns f32 output tensors (common for classification models)
+    pub fn runI32(
+        self: *Self,
+        input_data: []const []const i32,
+        input_shapes: []const []const i64,
+    ) ![]TensorF32 {
+        return self.runTypedImpl(i32, f32, input_data, input_shapes);
+    }
+
+    /// Run inference with i32 inputs returning i32 outputs
+    pub fn runI32ToI32(
+        self: *Self,
+        input_data: []const []const i32,
+        input_shapes: []const []const i64,
+    ) ![]TensorI32 {
+        return self.runTypedImpl(i32, i32, input_data, input_shapes);
+    }
+
+    /// Free i32 output tensors
+    pub fn freeI32Outputs(self: *Self, outputs: []TensorI32) void {
+        for (outputs) |*t| {
+            t.deinit();
+        }
+        self.allocator.free(outputs);
+    }
+
+    /// Generic typed inference method
+    /// InputT: Type of input tensor elements
+    /// OutputT: Type of output tensor elements
+    fn runTypedImpl(
+        self: *Self,
+        comptime InputT: type,
+        comptime OutputT: type,
+        input_data: []const []const InputT,
+        input_shapes: []const []const i64,
+    ) ![]Tensor(OutputT) {
+        if (input_data.len != self.input_count) return SessionError.InvalidInputCount;
+        if (input_shapes.len != self.input_count) return SessionError.InvalidInputCount;
+
+        const input_onnx_type: c_uint = @intCast(ort.zigTypeToOnnx(InputT));
+
+        // Create input OrtValues (using cached memory_info)
+        var input_values = try self.allocator.alloc(?*ort.OrtValue, self.input_count);
+        defer self.allocator.free(input_values);
+
+        for (0..self.input_count) |i| {
+            const data_ptr: ?*anyopaque = @constCast(@ptrCast(input_data[i].ptr));
+            const data_len = input_data[i].len * @sizeOf(InputT);
+
+            var value: ?*ort.OrtValue = null;
+            try checkOrtStatus(self.api, self.api.CreateTensorWithDataAsOrtValue.?(
+                self.memory_info,
+                data_ptr,
+                data_len,
+                input_shapes[i].ptr,
+                input_shapes[i].len,
+                input_onnx_type,
+                &value,
+            ));
+            input_values[i] = value;
+        }
+
+        // Ensure input values are released on error or completion
+        defer {
+            for (input_values) |val| {
+                if (val) |v| self.api.ReleaseValue.?(v);
+            }
+        }
+
+        // Allocate output value pointers
+        const output_values = try self.allocator.alloc(?*ort.OrtValue, self.output_count);
+        defer self.allocator.free(output_values);
+        @memset(output_values, null);
+
+        // Run inference (using cached name pointers)
+        try checkOrtStatus(self.api, self.api.Run.?(
+            self.session,
+            null, // run options
+            self.input_name_ptrs.ptr,
+            @ptrCast(input_values.ptr),
+            self.input_count,
+            self.output_name_ptrs.ptr,
+            self.output_count,
+            output_values.ptr,
+        ));
+
+        // Convert outputs to Zig tensors
+        const TensorOut = Tensor(OutputT);
+        var result_tensors = try self.allocator.alloc(TensorOut, self.output_count);
+        errdefer self.allocator.free(result_tensors);
+
+        for (0..self.output_count) |i| {
+            if (output_values[i]) |ort_value| {
+                defer self.api.ReleaseValue.?(ort_value);
+
+                // Get tensor info
+                var tensor_info: ?*ort.OrtTensorTypeAndShapeInfo = null;
+                try checkOrtStatus(self.api, self.api.GetTensorTypeAndShape.?(ort_value, &tensor_info));
+                defer self.api.ReleaseTensorTypeAndShapeInfo.?(tensor_info.?);
+
+                // Get dimensions
+                var dim_count: usize = 0;
+                try checkOrtStatus(self.api, self.api.GetDimensionsCount.?(tensor_info.?, &dim_count));
+
+                var dims: [MAX_DIMS]i64 = [_]i64{0} ** MAX_DIMS;
+                if (dim_count > 0) {
+                    try checkOrtStatus(self.api, self.api.GetDimensions.?(tensor_info.?, &dims, dim_count));
+                }
+
+                // Convert to usize shape
+                var shape_usize: [MAX_DIMS]usize = [_]usize{0} ** MAX_DIMS;
+                for (0..dim_count) |j| {
+                    shape_usize[j] = @intCast(dims[j]);
+                }
+
+                // Get data pointer
+                var data_ptr: ?*anyopaque = null;
+                try checkOrtStatus(self.api, self.api.GetTensorMutableData.?(ort_value, &data_ptr));
+
+                // Get element count
+                var elem_count: usize = 0;
+                try checkOrtStatus(self.api, self.api.GetTensorShapeElementCount.?(tensor_info.?, &elem_count));
+
+                // Create Zig tensor and copy data
+                const out_tensor = try TensorOut.init(self.allocator, shape_usize[0..dim_count]);
+                // Validate pointer alignment in debug builds
+                assertAligned(OutputT, data_ptr);
+                const src_slice: [*]const OutputT = @ptrCast(@alignCast(data_ptr.?));
+                @memcpy(out_tensor.data, src_slice[0..elem_count]);
+
+                result_tensors[i] = out_tensor;
+            } else {
+                return SessionError.OrtNullResult;
+            }
+        }
+
+        return result_tensors;
+    }
+
+    /// Generic free method for typed outputs
+    pub fn freeTypedOutputs(self: *Self, comptime T: type, outputs: []Tensor(T)) void {
+        for (outputs) |*t| {
+            t.deinit();
+        }
+        self.allocator.free(outputs);
+    }
+
+    // =========================================================================
+    // Named Tensor API
+    // =========================================================================
+
+    /// Named input for runNamed
+    pub const NamedInput = struct {
+        name: []const u8,
+        data: []const f32,
+        shape: []const i64,
+    };
+
+    /// Run inference with named inputs.
+    /// Allows specifying inputs by name rather than index order.
+    /// Useful when input order is unknown or for clarity.
+    pub fn runNamed(self: *Self, named_inputs: []const NamedInput) ![]TensorF32 {
+        if (named_inputs.len != self.input_count) return SessionError.InvalidInputCount;
+
+        // Reorder inputs to match expected order
+        var ordered_data: [16][]const f32 = undefined;
+        var ordered_shapes: [16][]const i64 = undefined;
+        var found_count: usize = 0;
+
+        if (self.input_count > 16) return SessionError.InvalidInputCount;
+
+        for (0..self.input_count) |i| {
+            const expected_name = self.input_names[i];
+            var found = false;
+
+            for (named_inputs) |input| {
+                if (std.mem.eql(u8, input.name, expected_name)) {
+                    ordered_data[i] = input.data;
+                    ordered_shapes[i] = input.shape;
+                    found = true;
+                    found_count += 1;
+                    break;
+                }
+            }
+
+            if (!found) return SessionError.InvalidInputCount;
+        }
+
+        return self.runF32(ordered_data[0..self.input_count], ordered_shapes[0..self.input_count]);
+    }
+
+    /// Run inference with a StringHashMap of inputs.
+    /// Keys are input names, values are tuples of (data, shape).
+    pub fn runWithMap(
+        self: *Self,
+        inputs: std.StringHashMap(struct { data: []const f32, shape: []const i64 }),
+    ) ![]TensorF32 {
+        if (inputs.count() != self.input_count) return SessionError.InvalidInputCount;
+
+        var ordered_data: [16][]const f32 = undefined;
+        var ordered_shapes: [16][]const i64 = undefined;
+
+        if (self.input_count > 16) return SessionError.InvalidInputCount;
+
+        for (0..self.input_count) |i| {
+            const expected_name = self.input_names[i];
+            if (inputs.get(expected_name)) |input| {
+                ordered_data[i] = input.data;
+                ordered_shapes[i] = input.shape;
+            } else {
+                return SessionError.InvalidInputCount;
+            }
+        }
+
+        return self.runF32(ordered_data[0..self.input_count], ordered_shapes[0..self.input_count]);
+    }
+
+    // =========================================================================
+    // Batch Inference API
+    // =========================================================================
+
+    /// Run batched inference with f32 tensors
+    /// Processes multiple samples in a single batch for efficiency.
+    /// All samples must have the same shape (excluding batch dimension).
+    ///
+    /// batch_inputs: Array of input samples, each sample is an array of input tensors
+    /// sample_shape: Shape of a single sample (without batch dimension)
+    /// options: Batch processing options
+    ///
+    /// Returns: Array of output tensors for each sample
+    pub fn runF32Batch(
+        self: *Self,
+        batch_inputs: []const []const f32,
+        sample_shape: []const i64,
+        options: BatchOptions,
+    ) ![]TensorF32 {
+        if (batch_inputs.len == 0) return &[_]TensorF32{};
+
+        const batch_size = batch_inputs.len;
+
+        // Calculate elements per sample
+        var sample_elements: usize = 1;
+        for (sample_shape) |dim| {
+            sample_elements *= @intCast(dim);
+        }
+
+        // Validate all inputs have correct size
+        for (batch_inputs) |input| {
+            if (input.len != sample_elements) {
+                return SessionError.InvalidInputCount;
+            }
+        }
+
+        // Create batched shape: [batch_size, ...sample_shape]
+        var batched_shape: [MAX_DIMS]i64 = [_]i64{0} ** MAX_DIMS;
+        batched_shape[0] = @intCast(batch_size);
+        for (sample_shape, 0..) |dim, i| {
+            if (i + 1 >= MAX_DIMS) break;
+            batched_shape[i + 1] = dim;
+        }
+        const batched_shape_len = @min(sample_shape.len + 1, MAX_DIMS);
+
+        // Allocate and copy batched input data
+        const total_elements = batch_size * sample_elements;
+        var batched_data = try self.allocator.alloc(f32, total_elements);
+        defer self.allocator.free(batched_data);
+
+        for (batch_inputs, 0..) |input, batch_idx| {
+            const offset = batch_idx * sample_elements;
+            @memcpy(batched_data[offset..][0..sample_elements], input);
+        }
+
+        // Run inference with batched input
+        const outputs = try self.runF32(
+            &[_][]const f32{batched_data},
+            &[_][]const i64{batched_shape[0..batched_shape_len]},
+        );
+
+        // If unbatch is requested, split outputs back into individual samples
+        if (options.unbatch_outputs and outputs.len > 0) {
+            defer self.freeOutputs(outputs);
+
+            const output_tensor = outputs[0];
+            const output_batch_size = output_tensor.shape.dims[0];
+
+            if (output_batch_size != batch_size) {
+                return SessionError.ShapeMismatch;
+            }
+
+            // Calculate output elements per sample
+            var output_sample_elements: usize = 1;
+            for (1..output_tensor.shape.ndim) |i| {
+                output_sample_elements *= output_tensor.shape.dims[i];
+            }
+
+            // Create output shape for individual samples
+            var sample_output_shape: [MAX_DIMS]usize = [_]usize{0} ** MAX_DIMS;
+            for (1..output_tensor.shape.ndim) |i| {
+                sample_output_shape[i - 1] = output_tensor.shape.dims[i];
+            }
+            const sample_ndim = output_tensor.shape.ndim - 1;
+
+            // Allocate individual output tensors
+            var result = try self.allocator.alloc(TensorF32, batch_size);
+            errdefer {
+                for (result) |*t| t.deinit();
+                self.allocator.free(result);
+            }
+
+            for (0..batch_size) |batch_idx| {
+                result[batch_idx] = try TensorF32.init(self.allocator, sample_output_shape[0..sample_ndim]);
+                const src_offset = batch_idx * output_sample_elements;
+                @memcpy(result[batch_idx].data, output_tensor.data[src_offset..][0..output_sample_elements]);
+            }
+
+            return result;
+        }
+
+        return outputs;
+    }
+
+    /// Run batched inference and return just the argmax indices
+    /// Useful for classification tasks where only the predicted class is needed
+    pub fn runF32BatchClassify(
+        self: *Self,
+        batch_inputs: []const []const f32,
+        sample_shape: []const i64,
+    ) ![]usize {
+        const outputs = try self.runF32Batch(batch_inputs, sample_shape, .{ .unbatch_outputs = true });
+        defer {
+            for (outputs) |*t| {
+                var t_mut = t.*;
+                t_mut.deinit();
+            }
+            self.allocator.free(outputs);
+        }
+
+        var predictions = try self.allocator.alloc(usize, outputs.len);
+        for (outputs, 0..) |output, i| {
+            predictions[i] = tensor_mod.SimdOps.argmax(output.data);
+        }
+
+        return predictions;
     }
 };
 
@@ -1625,4 +2156,286 @@ test "Session - get input info for u8 model" {
 
     try std.testing.expectEqualStrings("Y", output_info.name);
     try std.testing.expectEqual(@as(c_uint, @intCast(ort.c.ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8)), output_info.dtype);
+}
+
+// =============================================================================
+// Extended Data Type Tests (f64, i32)
+// =============================================================================
+
+test "Session - identity_f64 model inference" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("identity_f64.onnx")) orelse return;
+    defer session.deinit();
+
+    // Verify model metadata
+    try std.testing.expectEqual(@as(usize, 1), session.getInputCount());
+    try std.testing.expectEqual(@as(usize, 1), session.getOutputCount());
+
+    // Input: [1, 4] f64 tensor
+    const input_data = [_]f64{ 1.5, 2.5, 3.5, 4.5 };
+    const input_shape = [_]i64{ 1, 4 };
+
+    const outputs = try session.runF64(
+        &[_][]const f64{&input_data},
+        &[_][]const i64{&input_shape},
+    );
+    defer session.freeF64Outputs(outputs);
+
+    // Identity should return same values
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expectEqual(@as(usize, 4), outputs[0].numel());
+
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(input_data[i], outputs[0].data[i], 1e-10);
+    }
+}
+
+test "Session - identity_i32 model inference" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("identity_i32.onnx")) orelse return;
+    defer session.deinit();
+
+    // Verify model metadata
+    try std.testing.expectEqual(@as(usize, 1), session.getInputCount());
+    try std.testing.expectEqual(@as(usize, 1), session.getOutputCount());
+
+    // Input: [1, 4] i32 tensor
+    const input_data = [_]i32{ -100, 0, 50, 1000 };
+    const input_shape = [_]i64{ 1, 4 };
+
+    const outputs = try session.runI32ToI32(
+        &[_][]const i32{&input_data},
+        &[_][]const i64{&input_shape},
+    );
+    defer session.freeI32Outputs(outputs);
+
+    // Identity should return same values
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expectEqual(@as(usize, 4), outputs[0].numel());
+
+    for (0..4) |i| {
+        try std.testing.expectEqual(input_data[i], outputs[0].data[i]);
+    }
+}
+
+test "Session - get input info for f64 model" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("identity_f64.onnx")) orelse return;
+    defer session.deinit();
+
+    var input_info = try session.getInputInfo(0);
+    defer input_info.deinit(allocator);
+
+    try std.testing.expectEqualStrings("X", input_info.name);
+    try std.testing.expectEqual(@as(c_uint, @intCast(ort.c.ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE)), input_info.dtype);
+}
+
+test "Session - get input info for i32 model" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("identity_i32.onnx")) orelse return;
+    defer session.deinit();
+
+    var input_info = try session.getInputInfo(0);
+    defer input_info.deinit(allocator);
+
+    try std.testing.expectEqualStrings("X", input_info.name);
+    try std.testing.expectEqual(@as(c_uint, @intCast(ort.c.ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32)), input_info.dtype);
+}
+
+// =============================================================================
+// Batch Inference Tests
+// =============================================================================
+
+test "Session - batch inference with identity model" {
+    const allocator = std.testing.allocator;
+
+    // Use identity_batch.onnx which has dynamic batch dimension [batch, 4]
+    var session = loadTestSession(allocator, getTestModelPath("identity_batch.onnx")) orelse return;
+    defer session.deinit();
+
+    // Create batch of 3 samples, each with 4 elements
+    const sample1 = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+    const sample2 = [_]f32{ 5.0, 6.0, 7.0, 8.0 };
+    const sample3 = [_]f32{ 9.0, 10.0, 11.0, 12.0 };
+
+    const batch_inputs = [_][]const f32{ &sample1, &sample2, &sample3 };
+    // Sample shape is [4] - batch dimension is added by runF32Batch
+    const sample_shape = [_]i64{4};
+
+    const outputs = try session.runF32Batch(&batch_inputs, &sample_shape, .{ .unbatch_outputs = true });
+    defer {
+        for (outputs) |*t| {
+            var t_mut = t.*;
+            t_mut.deinit();
+        }
+        allocator.free(outputs);
+    }
+
+    // Should get 3 output tensors
+    try std.testing.expectEqual(@as(usize, 3), outputs.len);
+
+    // Each output should match its input (identity model)
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(sample1[i], outputs[0].data[i], 1e-6);
+        try std.testing.expectApproxEqAbs(sample2[i], outputs[1].data[i], 1e-6);
+        try std.testing.expectApproxEqAbs(sample3[i], outputs[2].data[i], 1e-6);
+    }
+}
+
+test "Session - batch inference without unbatching" {
+    const allocator = std.testing.allocator;
+
+    // Use identity_batch.onnx which has dynamic batch dimension [batch, 4]
+    var session = loadTestSession(allocator, getTestModelPath("identity_batch.onnx")) orelse return;
+    defer session.deinit();
+
+    // Create batch of 2 samples
+    const sample1 = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+    const sample2 = [_]f32{ 5.0, 6.0, 7.0, 8.0 };
+
+    const batch_inputs = [_][]const f32{ &sample1, &sample2 };
+    // Sample shape is [4] - batch dimension is added by runF32Batch
+    const sample_shape = [_]i64{4};
+
+    const outputs = try session.runF32Batch(&batch_inputs, &sample_shape, .{ .unbatch_outputs = false });
+    defer session.freeOutputs(outputs);
+
+    // Should get 1 batched output tensor with batch_size=2
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    try std.testing.expectEqual(@as(usize, 2), outputs[0].shape.dims[0]); // batch dim
+    try std.testing.expectEqual(@as(usize, 8), outputs[0].numel()); // 2 * 4 elements
+}
+
+test "Session - runF32Simple" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("identity.onnx")) orelse return;
+    defer session.deinit();
+
+    const input_data = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+    const input_shape = [_]i64{ 1, 4 };
+
+    // Use simplified API
+    const outputs = try session.runF32Simple(&input_data, &input_shape);
+    defer session.freeOutputs(outputs);
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(input_data[i], outputs[0].data[i], 1e-6);
+    }
+}
+
+test "Session - runTensor" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("identity.onnx")) orelse return;
+    defer session.deinit();
+
+    // Create a TensorF32
+    var input = try TensorF32.init(allocator, &[_]usize{ 1, 4 });
+    defer input.deinit();
+    input.data[0] = 1.0;
+    input.data[1] = 2.0;
+    input.data[2] = 3.0;
+    input.data[3] = 4.0;
+
+    // Use tensor API
+    const outputs = try session.runTensor(&input);
+    defer session.freeOutputs(outputs);
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+    for (0..4) |i| {
+        try std.testing.expectApproxEqAbs(input.data[i], outputs[0].data[i], 1e-6);
+    }
+}
+
+test "Session - getInputIndex and getOutputIndex" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("add.onnx")) orelse return;
+    defer session.deinit();
+
+    // add.onnx has inputs A and B, output C
+    try std.testing.expectEqual(@as(?usize, 0), session.getInputIndex("A"));
+    try std.testing.expectEqual(@as(?usize, 1), session.getInputIndex("B"));
+    try std.testing.expectEqual(@as(?usize, null), session.getInputIndex("X"));
+
+    try std.testing.expectEqual(@as(?usize, 0), session.getOutputIndex("C"));
+    try std.testing.expectEqual(@as(?usize, null), session.getOutputIndex("Y"));
+
+    try std.testing.expect(session.hasInput("A"));
+    try std.testing.expect(session.hasInput("B"));
+    try std.testing.expect(!session.hasInput("X"));
+
+    try std.testing.expect(session.hasOutput("C"));
+    try std.testing.expect(!session.hasOutput("Y"));
+}
+
+test "Session - runNamed" {
+    const allocator = std.testing.allocator;
+
+    var session = loadTestSession(allocator, getTestModelPath("add.onnx")) orelse return;
+    defer session.deinit();
+
+    // add.onnx: C = A + B, both [2,3] tensors
+    const a_data = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    const b_data = [_]f32{ 0.5, 1.5, 2.5, 3.5, 4.5, 5.5 };
+    const shape = [_]i64{ 2, 3 };
+
+    // Provide inputs in reverse order using named API
+    const named_inputs = [_]Session.NamedInput{
+        .{ .name = "B", .data = &b_data, .shape = &shape },
+        .{ .name = "A", .data = &a_data, .shape = &shape },
+    };
+
+    const outputs = try session.runNamed(&named_inputs);
+    defer session.freeOutputs(outputs);
+
+    try std.testing.expectEqual(@as(usize, 1), outputs.len);
+
+    // Verify A + B
+    for (0..6) |i| {
+        const expected = a_data[i] + b_data[i];
+        try std.testing.expectApproxEqAbs(expected, outputs[0].data[i], 1e-6);
+    }
+}
+
+test "shapeI64ToUsize - valid conversion" {
+    const i64_shape = [_]i64{ 2, 3, 4 };
+    const result = shapeI64ToUsize(&i64_shape);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 2), result.?[0]);
+    try std.testing.expectEqual(@as(usize, 3), result.?[1]);
+    try std.testing.expectEqual(@as(usize, 4), result.?[2]);
+}
+
+test "shapeI64ToUsize - dynamic dimension returns null" {
+    const i64_shape = [_]i64{ 2, -1, 4 };
+    const result = shapeI64ToUsize(&i64_shape);
+    try std.testing.expect(result == null);
+}
+
+test "shapeUsizeToI64 - valid conversion" {
+    const usize_shape = [_]usize{ 2, 3, 4 };
+    const result = shapeUsizeToI64(&usize_shape);
+    try std.testing.expectEqual(@as(i64, 2), result[0]);
+    try std.testing.expectEqual(@as(i64, 3), result[1]);
+    try std.testing.expectEqual(@as(i64, 4), result[2]);
+}
+
+test "shapeNumel - element count" {
+    const shape = [_]i64{ 2, 3, 4 };
+    const result = shapeNumel(&shape);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 24), result.?);
+}
+
+test "shapeNumel - dynamic dimension returns null" {
+    const shape = [_]i64{ 2, -1, 4 };
+    const result = shapeNumel(&shape);
+    try std.testing.expect(result == null);
 }

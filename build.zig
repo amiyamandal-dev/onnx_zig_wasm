@@ -294,4 +294,66 @@ pub fn build(b: *std.Build) void {
     examples_step.dependOn(&install_example_basic.step);
     examples_step.dependOn(&install_example_mnist.step);
     examples_step.dependOn(&install_example_bert.step);
+
+    // =========================================================================
+    // C Shared Library (for FFI: Swift, JNI, N-API)
+    // =========================================================================
+
+    // Create module for C exports
+    const c_exports_mod = b.createModule(.{
+        .root_source_file = b.path("src/c_exports.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Link ONNX Runtime to the module
+    if (onnxruntime_path) |ort_path| {
+        c_exports_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{ort_path}) });
+        c_exports_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{ort_path}) });
+    }
+    c_exports_mod.linkSystemLibrary("onnxruntime", .{});
+
+    // Build as shared library using addLibrary
+    const c_lib = b.addLibrary(.{
+        .name = "onnx_zig",
+        .linkage = .dynamic,
+        .root_module = c_exports_mod,
+    });
+
+    const install_c_lib = b.addInstallArtifact(c_lib, .{});
+    const c_lib_step = b.step("c-lib", "Build C shared library for FFI");
+    c_lib_step.dependOn(&install_c_lib.step);
+
+    // Install C header
+    const install_header = b.addInstallFile(b.path("include/onnx_zig.h"), "include/onnx_zig.h");
+    c_lib_step.dependOn(&install_header.step);
+
+    // =========================================================================
+    // Static Library (for embedding)
+    // =========================================================================
+
+    // Create module for static library
+    const static_mod = b.createModule(.{
+        .root_source_file = b.path("src/c_exports.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Link ONNX Runtime
+    if (onnxruntime_path) |ort_path| {
+        static_mod.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{ort_path}) });
+        static_mod.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{ort_path}) });
+    }
+    static_mod.linkSystemLibrary("onnxruntime", .{});
+
+    const static_lib = b.addLibrary(.{
+        .name = "onnx_zig_static",
+        .linkage = .static,
+        .root_module = static_mod,
+    });
+
+    const install_static_lib = b.addInstallArtifact(static_lib, .{});
+    const static_lib_step = b.step("static-lib", "Build static library for embedding");
+    static_lib_step.dependOn(&install_static_lib.step);
+    static_lib_step.dependOn(&install_header.step);
 }

@@ -1,0 +1,42 @@
+{
+  "name": "@anthropic/onnx-zig-node",
+  "version": "0.1.0",
+  "description": "Node.js bindings for ONNX Zig inference library",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp build",
+    "clean": "node-gyp clean",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "onnx",
+    "zig",
+    "machine-learning",
+    "inference",
+    "neural-network",
+    "native"
+  ],
+  "author": "Anthropic",
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^7.0.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^10.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "binding.gyp",
+    "src/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/onnx-zig"
+  }
+}

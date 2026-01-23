@@ -177,6 +177,82 @@ def create_add_u8_model():
     return model
 
 
+def create_identity_f64_model():
+    """Create an identity model with DOUBLE (f64) data type"""
+    X = helper.make_tensor_value_info('X', TensorProto.DOUBLE, [1, 4])
+    Y = helper.make_tensor_value_info('Y', TensorProto.DOUBLE, [1, 4])
+
+    identity_node = helper.make_node(
+        'Identity',
+        inputs=['X'],
+        outputs=['Y'],
+        name='identity_f64_node'
+    )
+
+    graph = helper.make_graph(
+        [identity_node],
+        'identity_f64_graph',
+        [X],
+        [Y]
+    )
+
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 13)])
+    model.ir_version = 8
+
+    return model
+
+
+def create_identity_i32_model():
+    """Create an identity model with INT32 data type"""
+    X = helper.make_tensor_value_info('X', TensorProto.INT32, [1, 4])
+    Y = helper.make_tensor_value_info('Y', TensorProto.INT32, [1, 4])
+
+    identity_node = helper.make_node(
+        'Identity',
+        inputs=['X'],
+        outputs=['Y'],
+        name='identity_i32_node'
+    )
+
+    graph = helper.make_graph(
+        [identity_node],
+        'identity_i32_graph',
+        [X],
+        [Y]
+    )
+
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 13)])
+    model.ir_version = 8
+
+    return model
+
+
+def create_identity_batch_model():
+    """Create an identity model with dynamic batch dimension for batch inference testing"""
+    # Use 'batch' as symbolic name for dynamic batch dimension
+    X = helper.make_tensor_value_info('X', TensorProto.FLOAT, ['batch', 4])
+    Y = helper.make_tensor_value_info('Y', TensorProto.FLOAT, ['batch', 4])
+
+    identity_node = helper.make_node(
+        'Identity',
+        inputs=['X'],
+        outputs=['Y'],
+        name='identity_batch_node'
+    )
+
+    graph = helper.make_graph(
+        [identity_node],
+        'identity_batch_graph',
+        [X],
+        [Y]
+    )
+
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 13)])
+    model.ir_version = 8
+
+    return model
+
+
 def main():
     import os
 
@@ -192,6 +268,9 @@ def main():
         ('matmul.onnx', create_matmul_model()),
         ('identity_u8.onnx', create_identity_u8_model()),
         ('add_u8.onnx', create_add_u8_model()),
+        ('identity_f64.onnx', create_identity_f64_model()),
+        ('identity_i32.onnx', create_identity_i32_model()),
+        ('identity_batch.onnx', create_identity_batch_model()),
     ]
 
     for filename, model in models:
@@ -208,6 +287,9 @@ def main():
     print("- matmul.onnx: Y = A @ B where A is [2,3], B is [3,4] f32 tensors")
     print("- identity_u8.onnx: Y = X where X is [1,8] u8 tensor (quantized)")
     print("- add_u8.onnx: C = A + B where A, B are [2,4] u8 tensors (quantized)")
+    print("- identity_f64.onnx: Y = X where X is [1,4] f64 tensor (double precision)")
+    print("- identity_i32.onnx: Y = X where X is [1,4] i32 tensor (32-bit integer)")
+    print("- identity_batch.onnx: Y = X where X is [batch,4] f32 tensor (dynamic batch)")
 
 
 if __name__ == '__main__':

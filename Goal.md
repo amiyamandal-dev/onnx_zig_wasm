@@ -98,29 +98,30 @@ MAIN GOAL :- build zig onnx wasm inference engine for edge computing.
 - [x] 12.5 Implement finer granularity tensor pool buckets
 - [x] 12.6 Pre-compute C pointer arrays during session init
 
-## Milestone 13: Extended Data Types & Batch API
-- [ ] 13.1 Add `runF64()` method for double precision
-- [ ] 13.2 Add `runI32()` method for 32-bit integers
-- [ ] 13.3 Add generic `runTyped(comptime T: type)` method
-- [ ] 13.4 Design and implement `BatchOptions` struct
-- [ ] 13.5 Implement `runF32Batch()` for batched inference
-- [ ] 13.6 Add batch dimension handling and dynamic padding
+## Milestone 13: Extended Data Types & Batch API [COMPLETE]
+- [x] 13.1 Add `runF64()` method for double precision
+- [x] 13.2 Add `runI32()` method for 32-bit integers
+- [x] 13.3 Add generic `runTypedImpl()` internal method
+- [x] 13.4 Design and implement `BatchOptions` struct
+- [x] 13.5 Implement `runF32Batch()` for batched inference
+- [x] 13.6 Implement `runF32BatchClassify()` for classification
+- [x] 13.7 Create identity_batch.onnx with dynamic batch dimension
 
-## Milestone 14: API Ergonomics
-- [ ] 14.1 Add shape conversion utilities (i64 <-> usize)
-- [ ] 14.2 Add `run()` method accepting `TensorF32` directly
-- [ ] 14.3 Add `runF32Simple()` for single-input inference
-- [ ] 14.4 Add `runNamed()` with StringHashMap interface
-- [ ] 14.5 Add `getInputIndex()`, `getOutputIndex()` helpers
-- [ ] 14.6 Add tensor ops: matmul, transpose, concat, slice, pad
+## Milestone 14: API Ergonomics [COMPLETE]
+- [x] 14.1 Add shape conversion utilities (i64 <-> usize)
+- [x] 14.2 Add `runTensor()`, `runTensors()` accepting TensorF32 directly
+- [x] 14.3 Add `runF32Simple()` for single-input inference
+- [x] 14.4 Add `runNamed()` and `runWithMap()` for named inputs
+- [x] 14.5 Add `getInputIndex()`, `getOutputIndex()`, `hasInput()`, `hasOutput()` helpers
+- [x] 14.6 Add tensor ops: matmul, transpose, concat, sliceAxis0, pad
 
-## Milestone 15: Platform Support
-- [ ] 15.1 iOS: Create `.framework` build target
-- [ ] 15.2 iOS: Swift bindings via C ABI
+## Milestone 15: Platform Support [IN PROGRESS]
+- [x] 15.1 iOS: C header and shared/static library targets
+- [x] 15.2 iOS: Swift bindings via C ABI (`swift/OnnxZig.swift`)
 - [ ] 15.3 Android: JNI bindings
 - [ ] 15.4 Android: NDK build configuration
-- [ ] 15.5 Node.js: N-API wrapper for Session
-- [ ] 15.6 WASM: Dynamic tensor handle allocation
+- [x] 15.5 Node.js: N-API wrapper for Session (`node/`)
+- [x] 15.6 WASM: Dynamic tensor handle allocation with stats
 - [ ] 15.7 WASM: SharedArrayBuffer for multi-threading
 - [ ] 15.8 WASM: WebGPU execution provider integration
 
@@ -155,11 +156,11 @@ MAIN GOAL :- build zig onnx wasm inference engine for edge computing.
 
 ---
 
-## Current Focus: Milestone 13 - Extended Data Types & Batch API
+## Current Focus: Milestone 15 - Platform Support (In Progress)
 
-Milestones 1-12 are complete! The inference engine can now:
+Milestones 1-14 are complete! The inference engine can now:
 - Load ONNX models from file (native)
-- Run inference with f32, i64, and u8 tensors
+- Run inference with f32, f64, i32, i64, and u8 tensors
 - Introspect model inputs/outputs
 - Handle errors gracefully with improved context
 - Reuse memory efficiently (arena allocator, optimized tensor pool)
@@ -178,11 +179,23 @@ Milestones 1-12 are complete! The inference engine can now:
 - **Cached memory_info and C pointer arrays**
 - **SIMD activation functions (softmax, sigmoid, tanh, gelu, logSoftmax, argmax)**
 - **Fine-grained tensor pool buckets (25 size classes)**
+- **Extended data types: runF64(), runI32(), runI32ToI32()**
+- **Batched inference: runF32Batch(), runF32BatchClassify()**
+- **Dynamic batch dimension support**
+- **Shape conversion utilities (shapeI64ToUsize, shapeUsizeToI64)**
+- **Simplified inference: runF32Simple(), runTensor(), runTensors()**
+- **Named tensor API: runNamed(), runWithMap()**
+- **Input/output helpers: getInputIndex(), getOutputIndex(), hasInput(), hasOutput()**
+- **Tensor operations: matmul, transpose, concat, sliceAxis0, pad**
+- **C ABI exports for FFI integration**
+- **Swift bindings for iOS/macOS**
+- **Node.js N-API addon**
+- **WASM dynamic tensor pool with stats**
 
 Next priorities:
-- Add runF64() and runI32() methods
-- Generic runTyped(comptime T: type) method
-- Batched inference API
+- Android JNI bindings and NDK build
+- WASM SharedArrayBuffer support
+- WebGPU execution provider
 
 ## Demo
 

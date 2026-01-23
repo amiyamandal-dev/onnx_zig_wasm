@@ -54,39 +54,205 @@ export fn wasm_free_f32(ptr: usize, count: usize) void {
 }
 
 // =============================================================================
-// Tensor Handle System
+// Error Codes (accessible via wasm_get_last_error)
 // =============================================================================
 
-/// Maximum number of active tensor handles
-const MAX_TENSORS = 256;
+pub const WasmError = enum(i32) {
+    ok = 0,
+    out_of_memory = -1,
+    invalid_handle = -2,
+    invalid_shape = -3,
+    dimension_mismatch = -4,
+    out_of_bounds = -5,
+    no_free_slots = -6,
+    null_pointer = -7,
+};
 
-/// Tensor handle storage
-var tensor_storage: [MAX_TENSORS]?TensorF32 = [_]?TensorF32{null} ** MAX_TENSORS;
+var last_error: WasmError = .ok;
 
-/// Find a free tensor slot
-fn findFreeSlot() ?usize {
-    for (tensor_storage, 0..) |t, i| {
-        if (t == null) return i;
+/// Get the last error code
+export fn wasm_get_last_error() i32 {
+    return @intFromEnum(last_error);
+}
+
+/// Clear the last error
+export fn wasm_clear_error() void {
+    last_error = .ok;
+}
+
+// =============================================================================
+// Dynamic Tensor Handle System
+// =============================================================================
+
+/// Tensor entry with reference count
+const TensorEntry = struct {
+    tensor: ?TensorF32 = null,
+    ref_count: u32 = 0,
+    generation: u32 = 0, // Incremented on each allocation to detect stale handles
+};
+
+/// Initial tensor pool size
+const INITIAL_POOL_SIZE = 64;
+
+/// Maximum tensor pool size
+const MAX_POOL_SIZE = 4096;
+
+/// Current pool capacity
+var pool_capacity: usize = 0;
+
+/// Tensor handle storage (dynamically allocated)
+var tensor_pool: ?[]TensorEntry = null;
+
+/// Statistics
+var stats = struct {
+    total_allocations: u64 = 0,
+    total_frees: u64 = 0,
+    peak_usage: usize = 0,
+    current_usage: usize = 0,
+}{};
+
+/// Initialize the tensor pool
+fn initPool() bool {
+    if (tensor_pool != null) return true;
+
+    tensor_pool = wasm_allocator.alloc(TensorEntry, INITIAL_POOL_SIZE) catch {
+        last_error = .out_of_memory;
+        return false;
+    };
+    pool_capacity = INITIAL_POOL_SIZE;
+
+    // Initialize all entries
+    for (tensor_pool.?) |*entry| {
+        entry.* = TensorEntry{};
     }
-    return null;
+
+    return true;
 }
 
-/// Validate a tensor handle and return the index, or null if invalid
-inline fn validateHandle(handle: i32) ?usize {
-    if (handle < 0 or handle >= MAX_TENSORS) return null;
-    return @intCast(handle);
+/// Grow the tensor pool
+fn growPool() bool {
+    if (pool_capacity >= MAX_POOL_SIZE) {
+        last_error = .out_of_memory;
+        return false;
+    }
+
+    const new_capacity = @min(pool_capacity * 2, MAX_POOL_SIZE);
+    const new_pool = wasm_allocator.alloc(TensorEntry, new_capacity) catch {
+        last_error = .out_of_memory;
+        return false;
+    };
+
+    // Copy existing entries
+    if (tensor_pool) |old_pool| {
+        @memcpy(new_pool[0..pool_capacity], old_pool);
+        wasm_allocator.free(old_pool);
+    }
+
+    // Initialize new entries
+    for (new_pool[pool_capacity..]) |*entry| {
+        entry.* = TensorEntry{};
+    }
+
+    tensor_pool = new_pool;
+    pool_capacity = new_capacity;
+    return true;
 }
 
-/// Get tensor from handle, returns null if invalid handle or no tensor
-inline fn getTensor(handle: i32) ?TensorF32 {
-    const idx = validateHandle(handle) orelse return null;
-    return tensor_storage[idx];
+/// Find a free tensor slot, growing pool if needed
+fn findFreeSlot() ?usize {
+    if (!initPool()) return null;
+
+    // First pass: find existing free slot
+    for (tensor_pool.?, 0..) |entry, i| {
+        if (entry.tensor == null) return i;
+    }
+
+    // Pool is full, try to grow
+    const old_capacity = pool_capacity;
+    if (!growPool()) return null;
+
+    // Return first slot in new space
+    return old_capacity;
+}
+
+/// Validate a tensor handle and return the index
+fn validateHandle(handle: i32) ?usize {
+    if (handle < 0) return null;
+    const idx: usize = @intCast(handle);
+    if (idx >= pool_capacity) return null;
+    if (tensor_pool == null) return null;
+    return idx;
+}
+
+/// Get tensor from handle
+fn getTensor(handle: i32) ?TensorF32 {
+    const idx = validateHandle(handle) orelse {
+        last_error = .invalid_handle;
+        return null;
+    };
+    return tensor_pool.?[idx].tensor;
 }
 
 /// Get mutable tensor pointer from handle
-inline fn getTensorPtr(handle: i32) ?*TensorF32 {
-    const idx = validateHandle(handle) orelse return null;
-    return if (tensor_storage[idx] != null) &tensor_storage[idx].? else null;
+fn getTensorPtr(handle: i32) ?*TensorF32 {
+    const idx = validateHandle(handle) orelse {
+        last_error = .invalid_handle;
+        return null;
+    };
+    const entry = &tensor_pool.?[idx];
+    return if (entry.tensor != null) &entry.tensor.? else null;
+}
+
+// =============================================================================
+// Handle Statistics Exports
+// =============================================================================
+
+/// Get current number of active tensors
+export fn wasm_tensor_count() usize {
+    return stats.current_usage;
+}
+
+/// Get peak tensor usage
+export fn wasm_tensor_peak() usize {
+    return stats.peak_usage;
+}
+
+/// Get total allocations
+export fn wasm_tensor_total_allocs() u64 {
+    return stats.total_allocations;
+}
+
+/// Get pool capacity
+export fn wasm_tensor_capacity() usize {
+    return pool_capacity;
+}
+
+/// Retain a tensor handle (increment reference count)
+export fn tensor_retain(handle: i32) i32 {
+    const idx = validateHandle(handle) orelse return -1;
+    var entry = &tensor_pool.?[idx];
+    if (entry.tensor == null) return -1;
+    entry.ref_count += 1;
+    return handle;
+}
+
+/// Release a tensor handle (decrement reference count, free if zero)
+export fn tensor_release(handle: i32) void {
+    const idx = validateHandle(handle) orelse return;
+    var entry = &tensor_pool.?[idx];
+    if (entry.tensor == null) return;
+
+    if (entry.ref_count > 0) {
+        entry.ref_count -= 1;
+    }
+
+    if (entry.ref_count == 0) {
+        entry.tensor.?.deinit();
+        entry.tensor = null;
+        entry.generation += 1;
+        stats.total_frees += 1;
+        stats.current_usage -= 1;
+    }
 }
 
 // =============================================================================
@@ -98,13 +264,30 @@ inline fn getTensorPtr(handle: i32) ?*TensorF32 {
 /// shape_ptr: pointer to dimension array
 /// ndim: number of dimensions (max 8)
 export fn tensor_create(shape_ptr: [*]const usize, ndim: usize) i32 {
-    if (ndim == 0 or ndim > MAX_DIMS) return -1;
+    if (ndim == 0 or ndim > MAX_DIMS) {
+        last_error = .invalid_shape;
+        return -1;
+    }
 
     const slot = findFreeSlot() orelse return -1;
     const shape_slice = shape_ptr[0..ndim];
 
-    const tensor = TensorF32.init(wasm_allocator, shape_slice) catch return -1;
-    tensor_storage[slot] = tensor;
+    const tensor = TensorF32.init(wasm_allocator, shape_slice) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
+
+    tensor_pool.?[slot] = TensorEntry{
+        .tensor = tensor,
+        .ref_count = 1,
+        .generation = tensor_pool.?[slot].generation,
+    };
+
+    stats.total_allocations += 1;
+    stats.current_usage += 1;
+    if (stats.current_usage > stats.peak_usage) {
+        stats.peak_usage = stats.current_usage;
+    }
 
     return @intCast(slot);
 }
@@ -116,52 +299,100 @@ export fn tensor_zeros(shape_ptr: [*]const usize, ndim: usize) i32 {
 
 /// Create a tensor filled with ones.
 export fn tensor_ones(shape_ptr: [*]const usize, ndim: usize) i32 {
-    if (ndim == 0 or ndim > MAX_DIMS) return -1;
+    if (ndim == 0 or ndim > MAX_DIMS) {
+        last_error = .invalid_shape;
+        return -1;
+    }
 
     const slot = findFreeSlot() orelse return -1;
     const shape_slice = shape_ptr[0..ndim];
 
-    const tensor = TensorF32.ones(wasm_allocator, shape_slice) catch return -1;
-    tensor_storage[slot] = tensor;
+    const tensor = TensorF32.ones(wasm_allocator, shape_slice) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
+
+    tensor_pool.?[slot] = TensorEntry{
+        .tensor = tensor,
+        .ref_count = 1,
+        .generation = tensor_pool.?[slot].generation,
+    };
+
+    stats.total_allocations += 1;
+    stats.current_usage += 1;
+    if (stats.current_usage > stats.peak_usage) {
+        stats.peak_usage = stats.current_usage;
+    }
 
     return @intCast(slot);
 }
 
 /// Create a tensor filled with a specific value.
 export fn tensor_full(shape_ptr: [*]const usize, ndim: usize, value: f32) i32 {
-    if (ndim == 0 or ndim > MAX_DIMS) return -1;
+    if (ndim == 0 or ndim > MAX_DIMS) {
+        last_error = .invalid_shape;
+        return -1;
+    }
 
     const slot = findFreeSlot() orelse return -1;
     const shape_slice = shape_ptr[0..ndim];
 
-    const tensor = TensorF32.full(wasm_allocator, shape_slice, value) catch return -1;
-    tensor_storage[slot] = tensor;
+    const tensor = TensorF32.full(wasm_allocator, shape_slice, value) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
+
+    tensor_pool.?[slot] = TensorEntry{
+        .tensor = tensor,
+        .ref_count = 1,
+        .generation = tensor_pool.?[slot].generation,
+    };
+
+    stats.total_allocations += 1;
+    stats.current_usage += 1;
+    if (stats.current_usage > stats.peak_usage) {
+        stats.peak_usage = stats.current_usage;
+    }
 
     return @intCast(slot);
 }
 
 /// Create a tensor from existing data (copies the data).
 export fn tensor_from_data(data_ptr: [*]const f32, data_len: usize, shape_ptr: [*]const usize, ndim: usize) i32 {
-    if (ndim == 0 or ndim > MAX_DIMS) return -1;
+    if (ndim == 0 or ndim > MAX_DIMS) {
+        last_error = .invalid_shape;
+        return -1;
+    }
 
     const slot = findFreeSlot() orelse return -1;
     const shape_slice = shape_ptr[0..ndim];
 
-    var tensor = TensorF32.init(wasm_allocator, shape_slice) catch return -1;
+    var tensor = TensorF32.init(wasm_allocator, shape_slice) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
     const copy_len = @min(data_len, tensor.numel());
     @memcpy(tensor.data[0..copy_len], data_ptr[0..copy_len]);
 
-    tensor_storage[slot] = tensor;
+    tensor_pool.?[slot] = TensorEntry{
+        .tensor = tensor,
+        .ref_count = 1,
+        .generation = tensor_pool.?[slot].generation,
+    };
+
+    stats.total_allocations += 1;
+    stats.current_usage += 1;
+    if (stats.current_usage > stats.peak_usage) {
+        stats.peak_usage = stats.current_usage;
+    }
+
     return @intCast(slot);
 }
 
 /// Release a tensor and free its memory.
 export fn tensor_free(handle: i32) void {
-    const idx = validateHandle(handle) orelse return;
-    if (tensor_storage[idx]) |*t| {
-        t.deinit();
-        tensor_storage[idx] = null;
-    }
+    // Just call release - with initial ref_count of 1, it will free
+    tensor_release(handle);
 }
 
 // =============================================================================
@@ -284,17 +515,37 @@ export fn simd_fill(dst: [*]f32, value: f32, len: usize) void {
 // Tensor Operations (operate on tensor handles)
 // =============================================================================
 
+/// Helper to store a tensor in a slot with proper stats tracking
+fn storeTensorInSlot(slot: usize, tensor: TensorF32) void {
+    tensor_pool.?[slot] = TensorEntry{
+        .tensor = tensor,
+        .ref_count = 1,
+        .generation = tensor_pool.?[slot].generation,
+    };
+    stats.total_allocations += 1;
+    stats.current_usage += 1;
+    if (stats.current_usage > stats.peak_usage) {
+        stats.peak_usage = stats.current_usage;
+    }
+}
+
 /// Add two tensors element-wise: result = a + b
 /// Creates a new tensor for the result.
 export fn tensor_add(a_handle: i32, b_handle: i32) i32 {
     const a = getTensor(a_handle) orelse return -1;
     const b = getTensor(b_handle) orelse return -1;
-    if (a.numel() != b.numel()) return -1;
+    if (a.numel() != b.numel()) {
+        last_error = .dimension_mismatch;
+        return -1;
+    }
 
     const slot = findFreeSlot() orelse return -1;
-    const result = TensorF32.initUninit(wasm_allocator, a.shape.slice()) catch return -1;
+    const result = TensorF32.initUninit(wasm_allocator, a.shape.slice()) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
     SimdOps.add(result.data, a.data, b.data);
-    tensor_storage[slot] = result;
+    storeTensorInSlot(slot, result);
     return @intCast(slot);
 }
 
@@ -302,12 +553,18 @@ export fn tensor_add(a_handle: i32, b_handle: i32) i32 {
 export fn tensor_mul(a_handle: i32, b_handle: i32) i32 {
     const a = getTensor(a_handle) orelse return -1;
     const b = getTensor(b_handle) orelse return -1;
-    if (a.numel() != b.numel()) return -1;
+    if (a.numel() != b.numel()) {
+        last_error = .dimension_mismatch;
+        return -1;
+    }
 
     const slot = findFreeSlot() orelse return -1;
-    const result = TensorF32.initUninit(wasm_allocator, a.shape.slice()) catch return -1;
+    const result = TensorF32.initUninit(wasm_allocator, a.shape.slice()) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
     SimdOps.mul(result.data, a.data, b.data);
-    tensor_storage[slot] = result;
+    storeTensorInSlot(slot, result);
     return @intCast(slot);
 }
 
@@ -315,9 +572,12 @@ export fn tensor_mul(a_handle: i32, b_handle: i32) i32 {
 export fn tensor_relu(input_handle: i32) i32 {
     const input = getTensor(input_handle) orelse return -1;
     const slot = findFreeSlot() orelse return -1;
-    const result = TensorF32.initUninit(wasm_allocator, input.shape.slice()) catch return -1;
+    const result = TensorF32.initUninit(wasm_allocator, input.shape.slice()) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
     SimdOps.relu(result.data, input.data);
-    tensor_storage[slot] = result;
+    storeTensorInSlot(slot, result);
     return @intCast(slot);
 }
 
@@ -325,9 +585,12 @@ export fn tensor_relu(input_handle: i32) i32 {
 export fn tensor_scale(input_handle: i32, scalar: f32) i32 {
     const input = getTensor(input_handle) orelse return -1;
     const slot = findFreeSlot() orelse return -1;
-    const result = TensorF32.initUninit(wasm_allocator, input.shape.slice()) catch return -1;
+    const result = TensorF32.initUninit(wasm_allocator, input.shape.slice()) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
     SimdOps.scale(result.data, input.data, scalar);
-    tensor_storage[slot] = result;
+    storeTensorInSlot(slot, result);
     return @intCast(slot);
 }
 
@@ -335,8 +598,11 @@ export fn tensor_scale(input_handle: i32, scalar: f32) i32 {
 export fn tensor_clone(input_handle: i32) i32 {
     const input = getTensor(input_handle) orelse return -1;
     const slot = findFreeSlot() orelse return -1;
-    const cloned = input.clone(wasm_allocator) catch return -1;
-    tensor_storage[slot] = cloned;
+    const cloned = input.clone(wasm_allocator) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
+    storeTensorInSlot(slot, cloned);
     return @intCast(slot);
 }
 
@@ -349,11 +615,14 @@ export fn tensor_clone(input_handle: i32) i32 {
 export fn tensor_softmax(input_handle: i32) i32 {
     const input = getTensor(input_handle) orelse return -1;
     const slot = findFreeSlot() orelse return -1;
-    const result = TensorF32.initUninit(wasm_allocator, input.shape.slice()) catch return -1;
+    const result = TensorF32.initUninit(wasm_allocator, input.shape.slice()) catch {
+        last_error = .out_of_memory;
+        return -1;
+    };
 
     const n = input.numel();
     if (n == 0) {
-        tensor_storage[slot] = result;
+        storeTensorInSlot(slot, result);
         return @intCast(slot);
     }
 
@@ -373,7 +642,7 @@ export fn tensor_softmax(input_handle: i32) i32 {
         SimdOps.scale(result.data, result.data, 1.0 / sum);
     }
 
-    tensor_storage[slot] = result;
+    storeTensorInSlot(slot, result);
     return @intCast(slot);
 }
 
